@@ -25,7 +25,7 @@ func NewClient() *Client {
 type Package struct {
 	Name           string
 	PackageBase    string
-	PackageBaseID  string
+	PackageBaseID  int
 	Version        string
 	Description    string
 	URL            string
