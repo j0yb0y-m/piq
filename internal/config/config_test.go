@@ -1,0 +1,147 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Severity != "warning" {
+		t.Errorf("expected severity=warning, got %q", cfg.Severity)
+	}
+	if cfg.Threshold != 80 {
+		t.Errorf("expected threshold=80, got %d", cfg.Threshold)
+	}
+	if cfg.Pacman.SudoCmd != "sudo" {
+		t.Errorf("expected sudo_cmd=sudo, got %q", cfg.Pacman.SudoCmd)
+	}
+}
+
+func TestLoadMissingFile(t *testing.T) {
+	cfg, err := Load("/nonexistent/path/piq.toml")
+	if err != nil {
+		t.Fatalf("unexpected error loading missing file: %v", err)
+	}
+	if cfg.Severity != "warning" {
+		t.Errorf("expected defaults, got severity=%q", cfg.Severity)
+	}
+}
+
+func TestLoadTOML(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "piq.toml")
+	content := `
+severity = "critical"
+threshold = 50
+cache_dir = "/tmp/piq-test"
+
+[network]
+no_scan = true
+
+[rules]
+ignore = ["typosquat", "reputation"]
+
+[pacman]
+sudo_cmd = "doas"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Severity != "critical" {
+		t.Errorf("expected severity=critical, got %q", cfg.Severity)
+	}
+	if cfg.Threshold != 50 {
+		t.Errorf("expected threshold=50, got %d", cfg.Threshold)
+	}
+	if cfg.CacheDir != "/tmp/piq-test" {
+		t.Errorf("expected cache_dir=/tmp/piq-test, got %q", cfg.CacheDir)
+	}
+	if !cfg.Network.NoScan {
+		t.Error("expected no_scan=true")
+	}
+	if len(cfg.Rules.Ignore) != 2 {
+		t.Fatalf("expected 2 ignored rules, got %d", len(cfg.Rules.Ignore))
+	}
+	if cfg.Pacman.SudoCmd != "doas" {
+		t.Errorf("expected sudo_cmd=doas, got %q", cfg.Pacman.SudoCmd)
+	}
+}
+
+func TestIgnoresRule(t *testing.T) {
+	cfg := &Config{Rules: Rules{Ignore: []string{"typosquat", "reputation"}}}
+	if !cfg.IgnoresRule("typosquat") {
+		t.Error("expected typosquat to be ignored")
+	}
+	if !cfg.IgnoresRule("reputation") {
+		t.Error("expected reputation to be ignored")
+	}
+	if cfg.IgnoresRule("pipe-to-shell") {
+		t.Error("pipe-to-shell should not be ignored")
+	}
+}
+
+func TestIgnoresAll(t *testing.T) {
+	cfg := &Config{Rules: Rules{Ignore: []string{"*"}}}
+	if !cfg.IgnoresRule("anything") {
+		t.Error("wildcard should ignore everything")
+	}
+}
+
+func TestEnvOverrides(t *testing.T) {
+	t.Setenv("PIQ_SEVERITY", "info")
+	t.Setenv("PIQ_THRESHOLD", "25")
+	t.Setenv("PIQ_CACHE_DIR", "/env/test")
+	t.Setenv("PIQ_NETWORK_NO_SCAN", "true")
+	t.Setenv("PIQ_SUDO_CMD", "sudo -A")
+	t.Setenv("PIQ_RULES_IGNORE", "typosquat, reputation")
+
+	cfg := Default()
+	applyEnv(cfg)
+
+	if cfg.Severity != "info" {
+		t.Errorf("expected severity=info, got %q", cfg.Severity)
+	}
+	if cfg.Threshold != 25 {
+		t.Errorf("expected threshold=25, got %d", cfg.Threshold)
+	}
+	if cfg.CacheDir != "/env/test" {
+		t.Errorf("expected cache_dir=/env/test, got %q", cfg.CacheDir)
+	}
+	if !cfg.Network.NoScan {
+		t.Error("expected no_scan=true from env")
+	}
+	if cfg.Pacman.SudoCmd != "sudo -A" {
+		t.Errorf("expected sudo_cmd=sudo -A, got %q", cfg.Pacman.SudoCmd)
+	}
+	if len(cfg.Rules.Ignore) != 2 {
+		t.Errorf("expected 2 ignored rules from env, got %d", len(cfg.Rules.Ignore))
+	}
+}
+
+func TestSandboxEnabled(t *testing.T) {
+	// With explicit true
+	b := true
+	cfg := &Config{Sandbox: Sandbox{Enabled: &b}}
+	if !cfg.SandboxEnabled() {
+		t.Error("expected sandbox enabled")
+	}
+
+	// With explicit false
+	b = false
+	cfg = &Config{Sandbox: Sandbox{Enabled: &b}}
+	if cfg.SandboxEnabled() {
+		t.Error("expected sandbox disabled")
+	}
+
+	// With nil — auto-detect based on bwrap presence
+	cfg = &Config{Sandbox: Sandbox{Enabled: nil}}
+	// Just verify it doesn't panic; result depends on system
+	_ = cfg.SandboxEnabled()
+}
