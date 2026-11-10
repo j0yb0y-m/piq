@@ -48,7 +48,8 @@ func systemCmd() *cobra.Command {
 			scans := []report.Scan{}
 			var totalFindings int
 			for _, pkgname := range out {
-				if !alpm.IsInstalled(pkgname) {
+				installed, err := alpm.Installed(pkgname)
+				if err != nil || !installed {
 					continue
 				}
 
