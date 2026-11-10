@@ -87,7 +87,8 @@ func SuspiciousEntries(entries []FileEntry) []string {
 	}
 
 	for _, e := range entries {
-		p := normalizePath(e.Path)
+		raw := normalizePath(e.Path)
+		p := path.Clean(raw)
 
 		if e.Mode&os.ModeSetuid != 0 || e.Mode&os.ModeSetgid != 0 {
 			add("setuid/setgid bit set on " + e.Path)
@@ -104,8 +105,9 @@ func SuspiciousEntries(entries []FileEntry) []string {
 		if e.Typeflag == tar.TypeChar || e.Typeflag == tar.TypeBlock {
 			add("device node: " + p)
 		}
-		if hasTraversal(p) {
-			add("path traversal: " + p)
+		// Check the pre-clean form so a ".." cannot be normalized away.
+		if hasTraversal(raw) {
+			add("path traversal: " + raw)
 		}
 	}
 	return out

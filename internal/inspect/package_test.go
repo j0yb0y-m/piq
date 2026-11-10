@@ -96,6 +96,26 @@ func TestListingSetuidRoundTrip(t *testing.T) {
 	}
 }
 
+func TestListingSetgidAndStickyModes(t *testing.T) {
+	path := writeZstdTar(t, []tar.Header{
+		{Name: "usr/bin/y", Mode: 0o2755, Typeflag: tar.TypeReg},
+		{Name: "usr/share/sticky", Mode: 0o1777, Typeflag: tar.TypeDir},
+	})
+	entries, err := Listing(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Mode != os.ModeSetgid|0o755 {
+		t.Errorf("expected setgid mode, got %v", entries[0].Mode)
+	}
+	if entries[1].Mode != os.ModeSticky|0o777 {
+		t.Errorf("expected sticky mode, got %v", entries[1].Mode)
+	}
+}
+
 func TestSuspiciousEntriesWorldWritable(t *testing.T) {
 	entries := []FileEntry{
 		{Path: "/usr/share/pkg/world.txt", Mode: 0o666, Typeflag: tar.TypeReg},
@@ -176,6 +196,34 @@ func TestSuspiciousEntriesAbsoluteEscapingSymlink(t *testing.T) {
 	if len(suspicious) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %v", len(suspicious), suspicious)
 	}
+	if suspicious[0] != "escaping symlink: /usr/bin/x -> /root/.ssh/authorized_keys" {
+		t.Errorf("unexpected message: %s", suspicious[0])
+	}
+}
+
+func TestSuspiciousEntriesNormalizesPaths(t *testing.T) {
+	t.Run("dot prefix still reports system config", func(t *testing.T) {
+		e := FileEntry{Path: "./etc/systemd/system/x.service", Mode: 0o644, Typeflag: tar.TypeReg}
+		suspicious := SuspiciousEntries([]FileEntry{e})
+		want := "system config path: /etc/systemd/system/x.service"
+		if len(suspicious) != 1 || suspicious[0] != want {
+			t.Fatalf("got %v, want [%s]", suspicious, want)
+		}
+	})
+	t.Run("duplicate slash does not hide an escaping symlink", func(t *testing.T) {
+		e := FileEntry{Path: "//usr/bin/x", Linkname: "../../etc/shadow", Typeflag: tar.TypeSymlink}
+		suspicious := SuspiciousEntries([]FileEntry{e})
+		want := "escaping symlink: /usr/bin/x -> ../../etc/shadow"
+		if len(suspicious) != 1 || suspicious[0] != want {
+			t.Fatalf("got %v, want [%s]", suspicious, want)
+		}
+	})
+	t.Run("dot prefix does not create a false positive", func(t *testing.T) {
+		e := FileEntry{Path: "./usr/bin/x", Linkname: "../lib/x", Typeflag: tar.TypeSymlink}
+		if suspicious := SuspiciousEntries([]FileEntry{e}); len(suspicious) != 0 {
+			t.Fatalf("got %v, want no findings", suspicious)
+		}
+	})
 }
 
 func TestSuspiciousEntriesRelativeSymlinkInsidePrefix(t *testing.T) {
@@ -200,6 +248,16 @@ func TestSuspiciousEntriesDeviceNode(t *testing.T) {
 	}
 	if suspicious[0] != "device node: /dev/evil" {
 		t.Errorf("unexpected message: %s", suspicious[0])
+	}
+}
+
+func TestSuspiciousEntriesBlockDevice(t *testing.T) {
+	entries := []FileEntry{
+		{Path: "/dev/sdz", Mode: 0o600, Typeflag: tar.TypeBlock},
+	}
+	suspicious := SuspiciousEntries(entries)
+	if len(suspicious) != 1 || suspicious[0] != "device node: /dev/sdz" {
+		t.Fatalf("got %v, want [device node: /dev/sdz]", suspicious)
 	}
 }
 
