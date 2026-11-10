@@ -170,35 +170,7 @@ func containsDecoder(s string) bool {
 
 func (obfuscationRule) Check(ctx *Context) []Finding {
 	return ctx.ForEachFile(func(file *syntax.File, fname, raw string) []Finding {
-		found := false
-		if file != nil {
-			syntax.Walk(file, func(n syntax.Node) bool {
-				if found {
-					return false
-				}
-				switch v := n.(type) {
-				case *syntax.BinaryCmd:
-					if (v.Op == syntax.Pipe || v.Op == syntax.PipeAll) &&
-						containsDecoder(pkgbuild.Render(v.X)) &&
-						shellCommands[effectiveCommandName(firstCall(v.Y))] {
-						found = true
-						return false
-					}
-				case *syntax.CallExpr:
-					rendered := pkgbuild.Render(v)
-					if !containsDecoder(rendered) {
-						return true
-					}
-					cmd := effectiveCommandName(v)
-					if cmd == "eval" || (shellCommands[cmd] && callHasArg(v, "-c")) {
-						found = true
-						return false
-					}
-				}
-				return true
-			})
-		}
-		if !found {
+		if !decodingReachesShell(file, 0) {
 			return nil
 		}
 		return []Finding{{
@@ -208,6 +180,81 @@ func (obfuscationRule) Check(ctx *Context) []Finding {
 			Message:  "Decodes/decrypts embedded content (`" + trimExcerpt(raw) + "`) and feeds it to a shell or eval. This is how malware hides its payload from review — a very strong red flag.",
 		}}
 	})
+}
+
+// decodingReachesShell reports whether decoded output is actually
+// executed in this file: piped into a shell, evaluated, or used as a
+// shell -c script. Writing decoded bytes to a file is not execution.
+func decodingReachesShell(file *syntax.File, depth int) bool {
+	if file == nil || depth > 8 {
+		return false
+	}
+	found := false
+	syntax.Walk(file, func(n syntax.Node) bool {
+		if found {
+			return false
+		}
+		switch v := n.(type) {
+		case *syntax.BinaryCmd:
+			if (v.Op == syntax.Pipe || v.Op == syntax.PipeAll) &&
+				containsDecoder(pkgbuild.Render(v.X)) &&
+				shellCommands[effectiveCommandName(firstCall(v.Y))] {
+				found = true
+				return false
+			}
+		case *syntax.CallExpr:
+			rendered := pkgbuild.Render(v)
+			cmd := effectiveCommandName(v)
+			if cmd == "eval" && containsDecoder(rendered) {
+				found = true
+				return false
+			}
+			if shellCommands[cmd] && callHasArg(v, "-c") {
+				if script, ok := dashCScript(v); ok &&
+					decodedScriptReachesShell(script, depth+1) {
+					found = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// decodedScriptReachesShell inspects the argument to `sh -c`. It
+// covers a bare command substitution (whose output becomes the script)
+// and recursively parses the script for pipes/eval/nested -c.
+func decodedScriptReachesShell(script string, depth int) bool {
+	script = strings.TrimSpace(unquote(script))
+	if script == "" {
+		return false
+	}
+	if containsDecoder(script) && isCommandSubstitutionScript(script) {
+		return true
+	}
+	file, err := pkgbuild.Parse(strings.NewReader(script), "sh -c")
+	if err != nil {
+		return false
+	}
+	return decodingReachesShell(file, depth)
+}
+
+func isCommandSubstitutionScript(script string) bool {
+	if strings.HasPrefix(script, "$(") && strings.HasSuffix(script, ")") {
+		return true
+	}
+	return len(script) >= 2 && strings.HasPrefix(script, "`") && strings.HasSuffix(script, "`")
+}
+
+// dashCScript returns the word following -c in a shell invocation.
+func dashCScript(call *syntax.CallExpr) (string, bool) {
+	for i, arg := range call.Args {
+		if strings.EqualFold(pkgbuild.Render(arg), "-c") && i+1 < len(call.Args) {
+			return pkgbuild.Render(call.Args[i+1]), true
+		}
+	}
+	return "", false
 }
 
 func callHasArg(call *syntax.CallExpr, want string) bool {

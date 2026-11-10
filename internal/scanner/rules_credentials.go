@@ -130,7 +130,9 @@ func firstCredentialMatch(lower string) (credentialCategory, string, bool) {
 
 func matchCredentialCategory(lower string, cat credentialCategory) (string, bool) {
 	for _, pat := range cat.patterns {
-		if strings.Contains(lower, pat) {
+		// The haystack is lowercased, so normalize the pattern too.
+		// Return the original spelling for the human-facing message.
+		if strings.Contains(lower, strings.ToLower(pat)) {
 			return pat, true
 		}
 	}

@@ -52,9 +52,13 @@ func (suspiciousWriteRule) Check(ctx *Context) []Finding {
 				})
 			}
 
-			// A redirection target is always a destination.
+			// Only output redirections are destinations. Input
+			// redirections, here-documents, and fd duplication are
+			// reads/handles, not writes. `<>` opens a file for
+			// read/write but is ignored by default: the common shape
+			// is still a read, and we do not want to flag it.
 			for _, redir := range stmt.Redirs {
-				if redir == nil || redir.Word == nil {
+				if redir == nil || redir.Word == nil || !isWriteRedirect(redir.Op) {
 					continue
 				}
 				add(unquote(pkgbuild.Render(redir.Word)), pkgbuild.Render(stmt))
@@ -100,4 +104,18 @@ func sensitivePath(path string) (string, bool) {
 
 func unquote(s string) string {
 	return strings.Trim(strings.TrimSpace(s), `"'`)
+}
+
+// isWriteRedirect reports whether a redirection operator writes to its
+// word. Input redirects, here-documents, and descriptor duplication
+// are deliberately excluded.
+func isWriteRedirect(op syntax.RedirOperator) bool {
+	switch op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob,
+		syntax.RdrAll, syntax.AppAll,
+		syntax.RdrAllClob, syntax.AppAllClob:
+		return true
+	default:
+		return false
+	}
 }
