@@ -50,9 +50,6 @@ piq install <package>
 # Audit all installed AUR packages
 piq system
 
-# Install yay/paru hooks
-piq hooks
-
 # Search the AUR
 piq search <term>
 ```
@@ -78,9 +75,6 @@ severity = "warning"    # minimum severity to show: info, warning, critical
 threshold = 80          # minimum risk score to block on
 cache_dir = "/home/user/.cache/piq"
 
-[network]
-no_scan = false         # skip AUR reputation scan
-
 [rules]
 ignore = ["typosquat"]  # silence specific rules by ID
 
@@ -98,7 +92,6 @@ Environment variable overrides (take precedence over the TOML file):
 | `PIQ_SEVERITY` | Minimum severity to show |
 | `PIQ_THRESHOLD` | Risk score threshold |
 | `PIQ_CACHE_DIR` | Package cache directory |
-| `PIQ_NETWORK_NO_SCAN` | Skip AUR metadata scan |
 | `PIQ_SUDO_CMD` | Sudo command for pacman |
 | `PIQ_RULES_IGNORE` | Comma-separated rule IDs to ignore |
 
