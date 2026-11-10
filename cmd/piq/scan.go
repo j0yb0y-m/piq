@@ -182,40 +182,50 @@ func scoreWithConfig(ctx *scanner.Context) *scanner.Score {
 // printFindings renders findings grouped by severity with the verdict.
 func printFindings(res *scanResult) {
 	score := res.Score
-	fmt.Printf("\n%s%s — verdict %s%s, risk score %d, %d findings\n",
-		ui.Blue, res.Pkgbase, verdictColor(score.Verdict), score.Verdict.String(),
-		score.Total, len(score.Findings))
-	fmt.Printf("%s%s\n", ui.Overlay0, strings.Repeat("-", 60))
+	verdict := verdictStyle(score.Verdict)
+	ui.Printf("\n%s — verdict %s, risk score %d, %d findings\n",
+		ui.Notice(res.Pkgbase), verdict(score.Verdict.String()), score.Total, len(score.Findings))
+	ui.Println(ui.Muted(strings.Repeat("-", 60)))
 	for _, f := range score.Findings {
-		color := ui.Text
-		switch f.Severity {
-		case scanner.Critical:
-			color = ui.Red
-		case scanner.Warning:
-			color = ui.Peach
-		}
+		style := severityStyle(f.Severity)
 		where := "PKGBUILD"
 		if f.File != "" {
 			where = f.File
 		}
-		fmt.Printf("  %s[%s]%s %s\n", color, f.Severity, ui.Text, f.Message)
+		ui.Printf("  %s %s\n", style(fmt.Sprintf("[%s]", f.Severity)), f.Message)
 		if f.Line > 0 {
-			fmt.Printf("    %s→ %s:%d (%s)%s\n", ui.Overlay0, where, f.Line, f.Rule, ui.Text)
+			ui.Printf("    %s\n", ui.Muted(fmt.Sprintf("→ %s:%d (%s)", where, f.Line, f.Rule)))
 		} else {
-			fmt.Printf("    %s→ %s (%s)%s\n", ui.Overlay0, where, f.Rule, ui.Text)
+			ui.Printf("    %s\n", ui.Muted(fmt.Sprintf("→ %s (%s)", where, f.Rule)))
 		}
 	}
 }
 
-func verdictColor(v scanner.Verdict) string {
-	switch v {
-	case scanner.Malicious, scanner.Suspicious:
-		return ui.Red
-	case scanner.Sketchy:
-		return ui.Peach
-	case scanner.OK, scanner.Trusted:
-		return ui.Green
+// severityStyle returns the style helper for a finding severity.
+func severityStyle(s scanner.Severity) func(string) string {
+	switch s {
+	case scanner.Critical:
+		return ui.Critical
+	case scanner.Warning:
+		return ui.Warning
 	default:
-		return ui.Text
+		return plain
 	}
 }
+
+// verdictStyle returns the style helper for a verdict.
+func verdictStyle(v scanner.Verdict) func(string) string {
+	switch v {
+	case scanner.Malicious, scanner.Suspicious:
+		return ui.Critical
+	case scanner.Sketchy:
+		return ui.Warning
+	case scanner.OK, scanner.Trusted:
+		return ui.Success
+	default:
+		return plain
+	}
+}
+
+// plain returns text unchanged; it is the default for unstyled findings.
+func plain(s string) string { return s }

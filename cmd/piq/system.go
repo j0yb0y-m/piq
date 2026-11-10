@@ -33,11 +33,11 @@ func systemCmd() *cobra.Command {
 				return fmt.Errorf("listing AUR packages: %w", err)
 			}
 			if len(out) == 0 {
-				fmt.Printf("%sNo AUR packages found to audit.%s\n", ui.Green, ui.Text)
+				ui.Printf("%s\n", ui.Success("No AUR packages found to audit."))
 				return nil
 			}
 
-			fmt.Printf("%sAuditing %d AUR package(s)...%s\n\n", ui.Blue, len(out), ui.Text)
+			ui.Printf("%s\n\n", ui.Notice(fmt.Sprintf("Auditing %d AUR package(s)...", len(out))))
 
 			var totalFindings int
 			for _, pkgname := range out {
@@ -56,35 +56,34 @@ func systemCmd() *cobra.Command {
 				// If not cached, clone it silently for scanning.
 				if _, err := os.Stat(pkgDir); os.IsNotExist(err) {
 					if err := aur.FetchPackage(pkgbase, pkgDir); err != nil {
-						fmt.Printf("%s[skip]%s %s: %s\n", ui.Peach, ui.Text, pkgname, err)
+						ui.Printf("%s %s: %s\n", ui.Warning("[skip]"), pkgname, err)
 						continue
 					}
 				}
 
 				res, err := scanPackage(pkgname, reviewStore)
 				if err != nil {
-					fmt.Printf("%s[skip]%s %s: %s\n", ui.Peach, ui.Text, pkgname, err)
+					ui.Printf("%s %s: %s\n", ui.Warning("[skip]"), pkgname, err)
 					continue
 				}
 				if len(res.Score.Findings) > 0 {
-					color := verdictColor(res.Score.Verdict)
-					fmt.Printf("%s%s%s — %s (score %d)\n",
-						color, pkgname, ui.Text, res.Score.Verdict.String(), res.Score.Total)
+					verdict := verdictStyle(res.Score.Verdict)
+					ui.Printf("%s — %s (score %d)\n",
+						verdict(pkgname), res.Score.Verdict.String(), res.Score.Total)
 					for _, f := range res.Score.Findings {
-						fmt.Printf("  %s[%s]%s %s\n", ui.Overlay0, f.Severity, ui.Text, f.Message)
+						ui.Printf("  %s %s\n", ui.Muted(fmt.Sprintf("[%s]", f.Severity)), f.Message)
 					}
-					fmt.Println()
+					ui.Println()
 					totalFindings += len(res.Score.Findings)
 				} else {
-					fmt.Printf("%s%s%s — OK\n", ui.Green, pkgname, ui.Text)
+					ui.Printf("%s — OK\n", ui.Success(pkgname))
 				}
 			}
 
 			if totalFindings == 0 {
-				fmt.Printf("%sAll AUR packages look clean.%s\n", ui.Green, ui.Text)
+				ui.Printf("%s\n", ui.Success("All AUR packages look clean."))
 			} else {
-				fmt.Printf("%s%d finding(s) across %d packages.%s\n",
-					ui.Peach, totalFindings, len(out), ui.Text)
+				ui.Printf("%s\n", ui.Warning(fmt.Sprintf("%d finding(s) across %d packages.", totalFindings, len(out))))
 			}
 			return nil
 		},

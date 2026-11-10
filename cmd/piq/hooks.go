@@ -20,31 +20,31 @@ func hooksCmd() *cobra.Command {
 
 			if cfg != nil && cfg.Hooks.Yay != "" {
 				if err := writeHook(cfg.Hooks.Yay, yayHookContent()); err != nil {
-					fmt.Printf("%syay hook:%s %s\n", ui.Peach, ui.Text, err)
+					ui.Printf("%s %s\n", ui.Warning("yay hook:"), err)
 				} else {
-					fmt.Printf("%syay hook installed -> %s%s\n", ui.Green, cfg.Hooks.Yay, ui.Text)
+					ui.Printf("%s\n", ui.Success(fmt.Sprintf("yay hook installed -> %s", cfg.Hooks.Yay)))
 					installed++
 				}
 			}
 
 			if cfg != nil && cfg.Hooks.Paru != "" {
 				if err := writeHook(cfg.Hooks.Paru, paruHookContent()); err != nil {
-					fmt.Printf("%sparu hook:%s %s\n", ui.Peach, ui.Text, err)
+					ui.Printf("%s %s\n", ui.Warning("paru hook:"), err)
 				} else {
-					fmt.Printf("%sparu hook installed -> %s%s\n", ui.Green, cfg.Hooks.Paru, ui.Text)
+					ui.Printf("%s\n", ui.Success(fmt.Sprintf("paru hook installed -> %s", cfg.Hooks.Paru)))
 					installed++
 				}
 			}
 
 			if installed == 0 {
-				fmt.Printf("%sNo hook targets configured.%s Set hooks.yay/hooks.paru in piq.toml.\n", ui.Peach, ui.Text)
-				fmt.Println()
-				fmt.Println("Example piq.toml:")
-				fmt.Println()
-				fmt.Println("  [hooks]")
+				ui.Printf("%s Set hooks.yay/hooks.paru in piq.toml.\n", ui.Warning("No hook targets configured."))
+				ui.Println()
+				ui.Println("Example piq.toml:")
+				ui.Println()
+				ui.Println("  [hooks]")
 				if runtime.GOOS == "linux" {
-					fmt.Println(`  yay  = "/usr/share/libalpm/hooks/90-piq-yay.hook"`)
-					fmt.Println(`  paru = "/usr/share/libalpm/hooks/90-piq-paru.hook"`)
+					ui.Println(`  yay  = "/usr/share/libalpm/hooks/90-piq-yay.hook"`)
+					ui.Println(`  paru = "/usr/share/libalpm/hooks/90-piq-paru.hook"`)
 				}
 			}
 			return nil

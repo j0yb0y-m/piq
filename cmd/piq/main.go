@@ -55,7 +55,7 @@ func main() {
 	root.AddCommand(searchCmd(), scanCmd(jsonOut), installCmd(jsonOut), systemCmd(), hooksCmd())
 
 	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		ui.Errorf("%v\n", err)
 		os.Exit(1)
 	}
 }
@@ -71,7 +71,7 @@ func searchCmd() *cobra.Command {
 				return err
 			}
 			for _, r := range results {
-				fmt.Printf("%s %s (%d votes) — %s\n", r.Name, r.Version, r.NumVotes, r.Description)
+				ui.Printf("%s %s (%d votes) — %s\n", r.Name, r.Version, r.NumVotes, r.Description)
 			}
 			return nil
 		},
@@ -90,7 +90,7 @@ func cacheDir() (string, error) {
 }
 
 func confirm(prompt string) bool {
-	fmt.Printf("%s%s [y/N]%s ", ui.Peach, prompt, ui.Text)
+	ui.Printf("%s [y/N] ", ui.Warning(prompt))
 	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')
 	return strings.TrimSpace(strings.ToLower(line)) == "y"
@@ -144,7 +144,7 @@ func printJSON(res *scanResult) error {
 			Message:  f.Message,
 		})
 	}
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(ui.Out())
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
@@ -163,7 +163,7 @@ func installCmd(jsonOut bool) *cobra.Command {
 
 			score := res.Score
 			if score.Verdict == scanner.Malicious {
-				fmt.Printf("%sBLOCKED: verdict is MALICIOUS — refusing to install.%s\n", ui.Red, ui.Text)
+				ui.Printf("%s\n", ui.Critical("BLOCKED: verdict is MALICIOUS — refusing to install."))
 				printFindings(res)
 				return fmt.Errorf("installation blocked: MALICIOUS verdict")
 			}
@@ -185,10 +185,10 @@ func installCmd(jsonOut bool) *cobra.Command {
 				}
 			}
 			if criticalCount > 0 {
-				fmt.Printf("\n%s%d critical finding(s) detected.%s\n", ui.Red, criticalCount, ui.Text)
+				ui.Printf("\n%s\n", ui.Critical(fmt.Sprintf("%d critical finding(s) detected.", criticalCount)))
 			}
 			if len(score.Findings) > 0 && !confirm("Proceed with installation anyway?") {
-				fmt.Println("Aborted.")
+				ui.Println("Aborted.")
 				return nil
 			}
 
@@ -204,17 +204,17 @@ func installCmd(jsonOut bool) *cobra.Command {
 				PkgDir: pkgOutDir,
 			}
 
-			fmt.Printf("%sPhase 1/3: Fetching sources...%s\n", ui.Blue, ui.Text)
+			ui.Printf("%s\n", ui.Notice("Phase 1/3: Fetching sources..."))
 			if err := sandbox.FetchPhase(dirs, pkgDir); err != nil {
 				return fmt.Errorf("fetch phase: %w", err)
 			}
 
-			fmt.Printf("%sPhase 2/3: Building in sandbox (no network)...%s\n", ui.Blue, ui.Text)
+			ui.Printf("%s\n", ui.Notice("Phase 2/3: Building in sandbox (no network)..."))
 			if err := sandbox.BuildPhase(dirs, pkgDir); err != nil {
 				return fmt.Errorf("build phase: %w", err)
 			}
 
-			fmt.Printf("%sPhase 3/3: Inspecting built package...%s\n", ui.Blue, ui.Text)
+			ui.Printf("%s\n", ui.Notice("Phase 3/3: Inspecting built package..."))
 			entries, err := filepath.Glob(filepath.Join(pkgOutDir, "*.pkg.tar.zst"))
 			if err != nil || len(entries) == 0 {
 				return fmt.Errorf("no .pkg.tar.zst found in %s", pkgOutDir)
@@ -228,12 +228,12 @@ func installCmd(jsonOut bool) *cobra.Command {
 				}
 				suspicious := inspect.SuspiciousEntries(fileEntries)
 				if len(suspicious) > 0 {
-					fmt.Printf("\n%sSuspicious entries in %s:%s\n", ui.Red, filepath.Base(pkgPath), ui.Text)
+					ui.Printf("\n%s\n", ui.Critical(fmt.Sprintf("Suspicious entries in %s:", filepath.Base(pkgPath))))
 					for _, s := range suspicious {
-						fmt.Printf("  - %s\n", s)
+						ui.Printf("  - %s\n", s)
 					}
 					if !confirm("Install anyway?") {
-						fmt.Println("Aborted.")
+						ui.Println("Aborted.")
 						return nil
 					}
 				}
@@ -256,7 +256,7 @@ func installCmd(jsonOut bool) *cobra.Command {
 			// Record review state for future update-diff.
 			saveReview(res)
 
-			fmt.Printf("%s%s installed successfully.%s\n", ui.Green, name, ui.Text)
+			ui.Printf("%s\n", ui.Success(fmt.Sprintf("%s installed successfully.", name)))
 			return nil
 		},
 	}
@@ -281,20 +281,20 @@ func showDiff(res *scanResult) {
 		return
 	}
 
-	fmt.Printf("\n%sPackage has been updated since last review.%s\n", ui.Peach, ui.Text)
-	fmt.Printf("  %sLast reviewed: %s%s\n", ui.Overlay0, res.Review.ReviewedAt.Format("2006-01-02"), ui.Text)
-	fmt.Printf("  %sPrevious committer: %s%s\n", ui.Overlay0, res.Review.Committer, ui.Text)
+	ui.Printf("\n%s\n", ui.Warning("Package has been updated since last review."))
+	ui.Printf("  %s%s\n", ui.Muted("Last reviewed: "), res.Review.ReviewedAt.Format("2006-01-02"))
+	ui.Printf("  %s%s\n", ui.Muted("Previous committer: "), res.Review.Committer)
 
 	unified, newFindings := scanner.PKGBUILDDiff(oldSrc, newSrc)
 	if unified != "" {
-		fmt.Printf("\n%sDiff since last review:%s\n", ui.Blue, ui.Text)
-		fmt.Println(unified)
+		ui.Printf("\n%s\n", ui.Notice("Diff since last review:"))
+		ui.Println(unified)
 	}
 	// Show any dangerous lines that were ADDED since the last review.
 	if len(newFindings) > 0 {
-		fmt.Printf("\n%sNewly-introduced issues since last review:%s\n", ui.Red, ui.Text)
+		ui.Printf("\n%s\n", ui.Critical("Newly-introduced issues since last review:"))
 		for _, f := range newFindings {
-			fmt.Printf("  %s[%s]%s %s (%s)\n", ui.Red, f.Severity, ui.Text, f.Message, f.Rule)
+			ui.Printf("  %s %s (%s)\n", ui.Critical(fmt.Sprintf("[%s]", f.Severity)), f.Message, f.Rule)
 		}
 	}
 }
