@@ -210,7 +210,7 @@ func TestLayoutCreatesDirs(t *testing.T) {
 		"PackageDir": filepath.Join(cache, "hello"),
 		"SrcDest":    filepath.Join(cache, "sources"),
 		"BuildRoot":  filepath.Join(cache, "build"),
-		"PkgDest":    filepath.Join(cache, "packages"),
+		"PkgDest":    filepath.Join(cache, "packages", "hello"),
 		"LogDest":    filepath.Join(cache, "logs"),
 	}
 	got := map[string]string{
@@ -286,5 +286,138 @@ func TestArtifactsExcludesSignaturesAndSorts(t *testing.T) {
 		if arts[i] != want[i] {
 			t.Fatalf("artifact[%d] = %q, want %q", i, arts[i], want[i])
 		}
+	}
+}
+
+func TestLayoutsScopeArtifactsPerPackage(t *testing.T) {
+	cache := t.TempDir()
+	alpha, err := NewLayout(cache, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err := NewLayout(cache, "beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha.PkgDest == beta.PkgDest {
+		t.Fatalf("layouts share PkgDest %q", alpha.PkgDest)
+	}
+	if err := os.WriteFile(filepath.Join(alpha.PkgDest, "alpha-1-1-any.pkg.tar.zst"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Artifacts(beta); err == nil {
+		t.Fatal("beta saw alpha's artifact")
+	}
+	arts, err := Artifacts(alpha)
+	if err != nil || len(arts) != 1 {
+		t.Fatalf("alpha artifacts = %v, err = %v", arts, err)
+	}
+}
+
+func TestClearArtifactsRemovesStalePackages(t *testing.T) {
+	l, err := NewLayout(t.TempDir(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := []string{"foo.pkg.tar.zst", "foo.pkg.tar.zst.sig", "bar.pkg.tar.xz"}
+	for _, name := range stale {
+		if err := os.WriteFile(filepath.Join(l.PkgDest, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(l.PkgDest, "keep.txt")
+	if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearArtifacts(l); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range stale {
+		if _, err := os.Lstat(filepath.Join(l.PkgDest, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s still present: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("unrelated file removed: %v", err)
+	}
+}
+
+func TestRebuildDoesNotReturnStaleArtifact(t *testing.T) {
+	skipIfRoot(t)
+	l, err := NewLayout(t.TempDir(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(l.PkgDest, "hello-1-1-any.pkg.tar.zst"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := lookPath
+	lookPath = func(string) (string, error) { return "", errors.New("missing") }
+	defer func() { lookPath = old }()
+
+	dir, _ := stubMakepkg(t)
+	t.Setenv("PATH", dir)
+
+	if err := Build(l, Options{AllowUnsandboxed: true}); err != nil {
+		t.Fatalf("stub build failed: %v", err)
+	}
+	if _, err := Artifacts(l); err == nil {
+		t.Fatal("rebuild returned the stale artifact")
+	}
+}
+
+func TestFetchDoesNotClearArtifacts(t *testing.T) {
+	skipIfRoot(t)
+	l, err := NewLayout(t.TempDir(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(l.PkgDest, "hello-1-1-any.pkg.tar.zst")
+	if err := os.WriteFile(stale, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := lookPath
+	lookPath = func(string) (string, error) { return "", errors.New("missing") }
+	defer func() { lookPath = old }()
+
+	dir, _ := stubMakepkg(t)
+	t.Setenv("PATH", dir)
+
+	if err := Fetch(l, Options{AllowUnsandboxed: true}); err != nil {
+		t.Fatalf("stub fetch failed: %v", err)
+	}
+	arts, err := Artifacts(l)
+	if err != nil || len(arts) != 1 || arts[0] != stale {
+		t.Fatalf("fetch cleared artifacts: %v, err = %v", arts, err)
+	}
+}
+
+func TestArtifactsRejectsSymlinks(t *testing.T) {
+	l, err := NewLayout(t.TempDir(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(l.PkgDest, "real.pkg.tar.zst")
+	if err := os.WriteFile(real, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(l.PkgDest, "linked.pkg.tar.zst")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	arts, err := Artifacts(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(arts) != 1 || arts[0] != real {
+		t.Fatalf("artifacts = %v, want only %q", arts, real)
+	}
+}
+
+func TestArtifactsEmptyPkgDest(t *testing.T) {
+	if _, err := Artifacts(Layout{}); err == nil {
+		t.Fatal("expected error for empty PkgDest")
 	}
 }

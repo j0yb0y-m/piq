@@ -31,7 +31,7 @@ func NewLayout(cacheDir, pkgbase string) (Layout, error) {
 		PackageDir: filepath.Join(cacheDir, pkgbase),
 		SrcDest:    filepath.Join(cacheDir, "sources"),
 		BuildRoot:  filepath.Join(cacheDir, "build"),
-		PkgDest:    filepath.Join(cacheDir, "packages"),
+		PkgDest:    filepath.Join(cacheDir, "packages", pkgbase),
 		LogDest:    filepath.Join(cacheDir, "logs"),
 	}
 	for _, dir := range []string{l.PackageDir, l.SrcDest, l.BuildRoot, l.PkgDest, l.LogDest} {
@@ -121,22 +121,49 @@ func Fetch(l Layout, opts Options) error {
 }
 
 // Build runs prepare/build/package without network access by default.
+// Stale artifacts for this package are removed once the run is known to
+// be allowed, so a rebuild can never return the previous package.
 func Build(l Layout, opts Options) error {
-	return run(l, opts, "build", "--noextract", "--nodeps", "--noconfirm")
+	bwrap, err := preflight(opts)
+	if err != nil {
+		return err
+	}
+	if err := clearArtifacts(l); err != nil {
+		return err
+	}
+	return execPhase(l, opts, bwrap, "build", "--noextract", "--nodeps", "--noconfirm")
 }
 
 // run executes makepkg for phase inside bubblewrap, or directly when
 // the caller explicitly allowed an unsandboxed run.
 func run(l Layout, opts Options, phase string, flags ...string) error {
-	if os.Geteuid() == 0 {
-		return errors.New("refusing to run makepkg as root")
+	bwrap, err := preflight(opts)
+	if err != nil {
+		return err
 	}
+	return execPhase(l, opts, bwrap, phase, flags...)
+}
 
+// preflight enforces the no-root rule and resolves bubblewrap. An empty
+// bwrap path means the caller explicitly allowed an unsandboxed run.
+func preflight(opts Options) (string, error) {
+	if os.Geteuid() == 0 {
+		return "", errors.New("refusing to run makepkg as root")
+	}
 	bwrap, err := lookPath("bwrap")
 	if err != nil {
 		if !opts.AllowUnsandboxed {
-			return errors.New("bubblewrap (bwrap) not found; refusing to build unsandboxed (install bubblewrap or pass --no-sandbox)")
+			return "", errors.New("bubblewrap (bwrap) not found; refusing to build unsandboxed (install bubblewrap or pass --no-sandbox)")
 		}
+		return "", nil
+	}
+	return bwrap, nil
+}
+
+// execPhase runs makepkg in the resolved sandbox, or directly when bwrap
+// is empty.
+func execPhase(l Layout, opts Options, bwrap, phase string, flags ...string) error {
+	if bwrap == "" {
 		return runMakepkg(l, opts, flags...)
 	}
 
@@ -181,9 +208,30 @@ func setOutput(cmd *exec.Cmd, opts Options) {
 	}
 }
 
+// clearArtifacts removes package files left in PkgDest by an earlier
+// build of the same package base, including signatures.
+func clearArtifacts(l Layout) error {
+	if l.PkgDest == "" {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(l.PkgDest, "*.pkg.tar.*"))
+	if err != nil {
+		return fmt.Errorf("globbing package artifacts: %w", err)
+	}
+	for _, m := range matches {
+		if err := os.RemoveAll(m); err != nil {
+			return fmt.Errorf("removing stale artifact %s: %w", m, err)
+		}
+	}
+	return nil
+}
+
 // Artifacts returns the built package files in PkgDest, sorted by path.
-// Signature files and non-regular files are ignored.
+// Signature files, symlinks and other non-regular files are ignored.
 func Artifacts(l Layout) ([]string, error) {
+	if l.PkgDest == "" {
+		return nil, errors.New("no package artifacts found: package directory is empty")
+	}
 	matches, err := filepath.Glob(filepath.Join(l.PkgDest, "*.pkg.tar.*"))
 	if err != nil {
 		return nil, fmt.Errorf("globbing package artifacts: %w", err)
@@ -193,7 +241,7 @@ func Artifacts(l Layout) ([]string, error) {
 		if strings.HasSuffix(m, ".sig") {
 			continue
 		}
-		fi, err := os.Stat(m)
+		fi, err := os.Lstat(m)
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
