@@ -47,9 +47,10 @@ func Inspect(repoDir string) (*Provenance, error) {
 // errStopWalk lets the commit walk stop cleanly once a bound is reached.
 var errStopWalk = errors.New("stop history walk")
 
-// inspect walks at most maxCommits commits and stops at the first commit
-// older than maxAge. A non-positive bound disables it. The commit that
-// trips either bound is not included.
+// inspect walks at most maxCommits commits and, after recording HEAD, stops
+// before the first commit older than maxAge. A non-positive bound disables
+// it. The commit that trips either bound is not included; HEAD itself is
+// always recorded.
 func inspect(repoDir string, maxCommits int, maxAge time.Duration) (*Provenance, error) {
 	repo, err := git.PlainOpen(repoDir)
 	if err != nil {
@@ -72,7 +73,9 @@ func inspect(repoDir string, maxCommits int, maxAge time.Duration) (*Provenance,
 	var lastCommitTime time.Time
 	err = iter.ForEach(func(c *object.Commit) error {
 		committedAt := c.Committer.When
-		if maxAge > 0 && time.Since(committedAt) > maxAge {
+		// HEAD is always recorded so callers can identify the repo even
+		// when its newest commit predates the age bound.
+		if prov.CommitCount > 0 && maxAge > 0 && time.Since(committedAt) > maxAge {
 			return errStopWalk
 		}
 		if prov.CommitCount == 0 {

@@ -292,3 +292,40 @@ func TestLogEntryRecordsCommitter(t *testing.T) {
 		t.Errorf("Committer = %q, want Test Committer <committer@test.com>", e.Committer)
 	}
 }
+
+// setupRepoWithOldHead creates a repo whose only commit is older than any
+// sane age bound.
+func setupRepoWithOldHead(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	initTestRepo(t, dir)
+	commitFile(t, dir, []string{
+		"GIT_AUTHOR_NAME=Old Author",
+		"GIT_AUTHOR_EMAIL=old-author@test.com",
+		"GIT_COMMITTER_NAME=Old Committer",
+		"GIT_COMMITTER_EMAIL=old-committer@test.com",
+		"GIT_AUTHOR_DATE=2010-01-01T00:00:00+0000",
+		"GIT_COMMITTER_DATE=2010-01-01T00:00:00+0000",
+	}, "PKGBUILD", "pkgname=test\npkgver=1.0", "initial commit")
+	return dir
+}
+
+func TestInspectOldHeadStillExposed(t *testing.T) {
+	dir := setupRepoWithOldHead(t)
+	p, err := inspect(dir, 0, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HeadHash == "" {
+		t.Error("expected HeadHash for an old HEAD")
+	}
+	if p.HeadCommitter == "" {
+		t.Error("expected HeadCommitter for an old HEAD")
+	}
+	if p.CommitCount != 1 {
+		t.Errorf("CommitCount = %d, want 1", p.CommitCount)
+	}
+	if p.Maintainer == "" {
+		t.Error("expected non-empty Maintainer for an old HEAD")
+	}
+}
