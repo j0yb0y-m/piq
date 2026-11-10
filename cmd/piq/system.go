@@ -11,6 +11,7 @@ import (
 
 	"github.com/j0yb0y-m/piq/internal/alpm"
 	"github.com/j0yb0y-m/piq/internal/aur"
+	"github.com/j0yb0y-m/piq/internal/report"
 	"github.com/j0yb0y-m/piq/internal/ui"
 )
 
@@ -33,12 +34,18 @@ func systemCmd() *cobra.Command {
 				return fmt.Errorf("listing AUR packages: %w", err)
 			}
 			if len(out) == 0 {
+				if jsonOutput {
+					return report.Write(ui.Out(), []report.Scan{})
+				}
 				ui.Printf("%s\n", ui.Success("No AUR packages found to audit."))
 				return nil
 			}
 
-			ui.Printf("%s\n\n", ui.Notice(fmt.Sprintf("Auditing %d AUR package(s)...", len(out))))
+			if !jsonOutput {
+				ui.Printf("%s\n\n", ui.Notice(fmt.Sprintf("Auditing %d AUR package(s)...", len(out))))
+			}
 
+			scans := []report.Scan{}
 			var totalFindings int
 			for _, pkgname := range out {
 				if !alpm.IsInstalled(pkgname) {
@@ -56,14 +63,18 @@ func systemCmd() *cobra.Command {
 				// If not cached, clone it silently for scanning.
 				if _, err := os.Stat(pkgDir); os.IsNotExist(err) {
 					if err := aur.FetchPackage(pkgbase, pkgDir); err != nil {
-						ui.Printf("%s %s: %s\n", ui.Warning("[skip]"), pkgname, err)
+						skipPackage(pkgname, err)
 						continue
 					}
 				}
 
 				res, err := scanPackage(pkgname, reviewStore)
 				if err != nil {
-					ui.Printf("%s %s: %s\n", ui.Warning("[skip]"), pkgname, err)
+					skipPackage(pkgname, err)
+					continue
+				}
+				if jsonOutput {
+					scans = append(scans, scanReport(res))
 					continue
 				}
 				if len(res.Score.Findings) > 0 {
@@ -80,6 +91,10 @@ func systemCmd() *cobra.Command {
 				}
 			}
 
+			if jsonOutput {
+				return report.Write(ui.Out(), scans)
+			}
+
 			if totalFindings == 0 {
 				ui.Printf("%s\n", ui.Success("All AUR packages look clean."))
 			} else {
@@ -88,6 +103,16 @@ func systemCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// skipPackage reports a package that could not be scanned. In JSON mode
+// it writes to stderr so stdout stays valid JSON.
+func skipPackage(pkgname string, err error) {
+	if jsonOutput {
+		ui.Errorf("piq: skipping %s: %v\n", pkgname, err)
+		return
+	}
+	ui.Printf("%s %s: %s\n", ui.Warning("[skip]"), pkgname, err)
 }
 
 // pacmanListAUR returns package names whose origin is the AUR.

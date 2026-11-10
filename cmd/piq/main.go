@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/j0yb0y-m/piq/internal/aur"
 	"github.com/j0yb0y-m/piq/internal/inspect"
+	"github.com/j0yb0y-m/piq/internal/report"
 	"github.com/j0yb0y-m/piq/internal/review"
 	"github.com/j0yb0y-m/piq/internal/sandbox"
 	"github.com/j0yb0y-m/piq/internal/scanner"
@@ -25,14 +25,24 @@ func main() {
 }
 
 func searchCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit int
+	cmd := &cobra.Command{
 		Use:   "search <term>",
 		Short: "Search the AUR",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if limit < 0 {
+				return coded(exitUsage, fmt.Errorf("limit must not be negative: %d", limit))
+			}
 			results, err := aur.NewClient().Search(args[0])
 			if err != nil {
 				return err
+			}
+			if len(results) > limit {
+				results = results[:limit]
+			}
+			if jsonOutput {
+				return report.Write(ui.Out(), searchReport(results))
 			}
 			for _, r := range results {
 				ui.Printf("%s %s (%d votes) — %s\n", r.Name, r.Version, r.NumVotes, r.Description)
@@ -40,6 +50,8 @@ func searchCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of results to show")
+	return cmd
 }
 
 func cacheDir() (string, error) {
@@ -71,46 +83,18 @@ func scanCmd() *cobra.Command {
 				return err
 			}
 			if jsonOutput {
-				return printJSON(res)
+				if err := report.Write(ui.Out(), scanReport(res)); err != nil {
+					return err
+				}
+			} else {
+				printFindings(res)
 			}
-			printFindings(res)
+			if res.Score != nil && res.Score.Blocked {
+				return coded(exitBlocked, fmt.Errorf("blocked: %s", res.Score.BlockReason))
+			}
 			return nil
 		},
 	}
-}
-
-// printJSON emits the full scan result as JSON.
-func printJSON(res *scanResult) error {
-	type findingJSON struct {
-		Rule     string `json:"rule"`
-		Severity string `json:"severity"`
-		Line     int    `json:"line,omitempty"`
-		File     string `json:"file,omitempty"`
-		Message  string `json:"message"`
-	}
-	type resultJSON struct {
-		Pkgbase  string        `json:"pkgbase"`
-		Verdict  string        `json:"verdict"`
-		Risk     int           `json:"risk_score"`
-		Findings []findingJSON `json:"findings"`
-	}
-	out := resultJSON{
-		Pkgbase: res.Pkgbase,
-		Verdict: res.Score.Verdict.String(),
-		Risk:    res.Score.Total,
-	}
-	for _, f := range res.Score.Findings {
-		out.Findings = append(out.Findings, findingJSON{
-			Rule:     f.Rule,
-			Severity: f.Severity.String(),
-			Line:     f.Line,
-			File:     f.File,
-			Message:  f.Message,
-		})
-	}
-	enc := json.NewEncoder(ui.Out())
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
 }
 
 func installCmd() *cobra.Command {
@@ -126,6 +110,16 @@ func installCmd() *cobra.Command {
 			}
 
 			score := res.Score
+			if jsonOutput {
+				if err := report.Write(ui.Out(), scanReportFor(res, "install")); err != nil {
+					return err
+				}
+				if score != nil && score.Verdict == scanner.Malicious {
+					return coded(exitBlocked, fmt.Errorf("installation blocked: malicious verdict"))
+				}
+				return nil
+			}
+
 			if score.Verdict == scanner.Malicious {
 				ui.Printf("%s\n", ui.Critical("BLOCKED: verdict is MALICIOUS — refusing to install."))
 				printFindings(res)
@@ -137,9 +131,6 @@ func installCmd() *cobra.Command {
 				showDiff(res)
 			}
 
-			if jsonOutput {
-				return printJSON(res)
-			}
 			printFindings(res)
 
 			criticalCount := 0
