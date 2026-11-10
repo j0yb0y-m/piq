@@ -24,10 +24,11 @@ type Provenance struct {
 	NewestCommit time.Time
 	OldestCommit time.Time
 
-	HeadHash          string    // full hash of HEAD
-	HeadCommitter     string    // committer email of HEAD
-	PreviousCommitter string    // first committer after HEAD that differs from HeadCommitter
-	HeadCommittedAt   time.Time // committer timestamp of HEAD
+	HeadHash             string    // full hash of HEAD
+	HeadCommitter        string    // committer email of HEAD
+	PreviousCommitter    string    // first committer after HEAD that differs from HeadCommitter
+	HeadCommittedAt      time.Time // committer timestamp of HEAD
+	HeadCommitterFirstAt time.Time // oldest committer timestamp for HeadCommitter in the walked window
 }
 
 // LogEntry is a single history entry.
@@ -85,6 +86,12 @@ func inspect(repoDir string, maxCommits int, maxAge time.Duration) (*Provenance,
 			prov.NewestCommit = committedAt
 		} else if prov.PreviousCommitter == "" && c.Committer.Email != prov.HeadCommitter {
 			prov.PreviousCommitter = c.Committer.Email
+		}
+		if c.Committer.Email == prov.HeadCommitter {
+			// The walk is newest-first, so every match overwrites the
+			// previous one: the last assignment is the oldest commit by
+			// the current committer in the walked window.
+			prov.HeadCommitterFirstAt = committedAt
 		}
 		lastCommitTime = committedAt
 		prov.CommitCount++

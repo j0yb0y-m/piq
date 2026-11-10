@@ -26,7 +26,10 @@ func provOf(ctx *Context) *history.Provenance {
 const provenanceWindow = 180 * 24 * time.Hour
 
 // maintainerChangeRule flags a recent handover: HEAD's committer
-// differs from the previous distinct committer and HEAD is fresh.
+// differs from the previous distinct committer and first appears in the
+// history within the last 180 days. Dating the handover from the
+// committer's first commit (not from HEAD) avoids flagging a takeover
+// that happened years ago on a package that still gets commits.
 // Abandoned-package takeovers are a leading AUR attack vector.
 type maintainerChangeRule struct{}
 
@@ -44,13 +47,13 @@ func (maintainerChangeRule) Check(ctx *Context) []Finding {
 	if p.HeadCommitter == p.PreviousCommitter {
 		return nil
 	}
-	if p.HeadCommittedAt.IsZero() || time.Since(p.HeadCommittedAt) >= provenanceWindow {
+	if p.HeadCommitterFirstAt.IsZero() || time.Since(p.HeadCommitterFirstAt) >= provenanceWindow {
 		return nil
 	}
 	return []Finding{{
 		Rule:     "maintainer-change",
 		Severity: Warning,
-		Message:  "Package history shows a recent committer change from " + p.PreviousCommitter + " to " + p.HeadCommitter + " within the last 180 days. Abandoned-package takeovers are a leading AUR attack vector; review what changed at and after the handover.",
+		Message:  "The current committer (" + p.HeadCommitter + ") first appears in the package history within the last 180 days, replacing " + p.PreviousCommitter + ". Abandoned-package takeovers are a leading AUR attack vector; review what changed at and after the handover.",
 	}}
 }
 

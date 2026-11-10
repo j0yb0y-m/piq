@@ -275,6 +275,55 @@ func TestHeadProvenanceFields(t *testing.T) {
 	}
 }
 
+func TestHeadCommitterFirstAt(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir)
+	now := time.Now().UTC().Truncate(time.Second)
+	older := now.Add(-3 * time.Hour)
+	mid := now.Add(-2 * time.Hour)
+	head := now.Add(-1 * time.Hour)
+	date := func(tm time.Time) string { return tm.Format("2006-01-02T15:04:05+0000") }
+
+	commitFile(t, dir, []string{
+		"GIT_AUTHOR_NAME=Alice",
+		"GIT_AUTHOR_EMAIL=author-alice@test.com",
+		"GIT_COMMITTER_NAME=Alice",
+		"GIT_COMMITTER_EMAIL=alice@test.com",
+		"GIT_AUTHOR_DATE=" + date(older),
+		"GIT_COMMITTER_DATE=" + date(older),
+	}, "PKGBUILD", "pkgname=test\npkgver=1.0", "initial commit")
+	commitFile(t, dir, []string{
+		"GIT_AUTHOR_NAME=Bob",
+		"GIT_AUTHOR_EMAIL=author-bob@test.com",
+		"GIT_COMMITTER_NAME=Bob",
+		"GIT_COMMITTER_EMAIL=bob@test.com",
+		"GIT_AUTHOR_DATE=" + date(mid),
+		"GIT_COMMITTER_DATE=" + date(mid),
+	}, "PKGBUILD", "pkgname=test\npkgver=2.0", "take over")
+	commitFile(t, dir, []string{
+		"GIT_AUTHOR_NAME=Bob",
+		"GIT_AUTHOR_EMAIL=author-bob@test.com",
+		"GIT_COMMITTER_NAME=Bob",
+		"GIT_COMMITTER_EMAIL=bob@test.com",
+		"GIT_AUTHOR_DATE=" + date(head),
+		"GIT_COMMITTER_DATE=" + date(head),
+	}, "PKGBUILD", "pkgname=test\npkgver=3.0", "bump version")
+
+	p, err := Inspect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HeadCommitter != "bob@test.com" {
+		t.Fatalf("HeadCommitter = %q, want bob@test.com", p.HeadCommitter)
+	}
+	if !p.HeadCommitterFirstAt.Equal(mid) {
+		t.Errorf("HeadCommitterFirstAt = %v, want %v (Bob's first commit)", p.HeadCommitterFirstAt, mid)
+	}
+	if p.HeadCommitterFirstAt.Equal(p.HeadCommittedAt) {
+		t.Errorf("HeadCommitterFirstAt = HEAD time %v, want the first committer commit", p.HeadCommittedAt)
+	}
+}
+
 func TestLogEntryRecordsCommitter(t *testing.T) {
 	dir := setupRepoWithDifferentAuthorAndCommitter(t)
 	p, err := Inspect(dir)

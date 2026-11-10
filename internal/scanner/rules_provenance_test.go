@@ -9,17 +9,45 @@ import (
 
 func TestMaintainerChangeOnlyOnRecentHandover(t *testing.T) {
 	now := time.Now()
-	recent := &history.Provenance{HeadCommitter: "new@x", PreviousCommitter: "old@x", HeadCommittedAt: now.Add(-24 * time.Hour)}
+	recent := &history.Provenance{
+		HeadCommitter: "new@x", PreviousCommitter: "old@x",
+		HeadCommittedAt: now.Add(-24 * time.Hour), HeadCommitterFirstAt: now.Add(-24 * time.Hour),
+	}
 	if f := findingsFor(maintainerChangeRule{}.Check(&Context{History: recent}), "maintainer-change"); len(f) == 0 {
 		t.Fatal("expected finding")
 	}
-	stable := &history.Provenance{HeadCommitter: "same@x", PreviousCommitter: "same@x", HeadCommittedAt: now}
+	stable := &history.Provenance{HeadCommitter: "same@x", PreviousCommitter: "same@x", HeadCommittedAt: now, HeadCommitterFirstAt: now.Add(-24 * time.Hour)}
 	if f := findingsFor(maintainerChangeRule{}.Check(&Context{History: stable}), "maintainer-change"); len(f) != 0 {
 		t.Fatal("stable repo flagged")
 	}
-	old := &history.Provenance{HeadCommitter: "new@x", PreviousCommitter: "old@x", HeadCommittedAt: now.Add(-2 * 365 * 24 * time.Hour)}
+	old := &history.Provenance{HeadCommitter: "new@x", PreviousCommitter: "old@x", HeadCommittedAt: now, HeadCommitterFirstAt: now.Add(-2 * 365 * 24 * time.Hour)}
 	if f := findingsFor(maintainerChangeRule{}.Check(&Context{History: old}), "maintainer-change"); len(f) != 0 {
 		t.Fatal("old handover flagged")
+	}
+}
+
+// TestMaintainerChangeDatesHandoverFromFirstCommitterCommit is the R16
+// regression: a recent HEAD alone must not look like a recent handover.
+func TestMaintainerChangeDatesHandoverFromFirstCommitterCommit(t *testing.T) {
+	now := time.Now()
+	p := &history.Provenance{
+		HeadCommitter: "new@x", PreviousCommitter: "old@x",
+		HeadCommittedAt:      now.Add(-24 * time.Hour),
+		HeadCommitterFirstAt: now.Add(-2 * 365 * 24 * time.Hour),
+	}
+	if f := findingsFor(maintainerChangeRule{}.Check(&Context{History: p}), "maintainer-change"); len(f) != 0 {
+		t.Fatalf("old handover with recent HEAD flagged: %v", f)
+	}
+}
+
+func TestMaintainerChangeNeedsFirstCommitterCommit(t *testing.T) {
+	now := time.Now()
+	p := &history.Provenance{
+		HeadCommitter: "new@x", PreviousCommitter: "old@x",
+		HeadCommittedAt: now.Add(-24 * time.Hour),
+	}
+	if f := findingsFor(maintainerChangeRule{}.Check(&Context{History: p}), "maintainer-change"); len(f) != 0 {
+		t.Fatalf("missing HeadCommitterFirstAt flagged: %v", f)
 	}
 }
 
@@ -27,8 +55,8 @@ func TestMaintainerChangeNeedsBothCommitters(t *testing.T) {
 	now := time.Now()
 	for name, p := range map[string]*history.Provenance{
 		"zero timestamp": {HeadCommitter: "new@x", PreviousCommitter: "old@x"},
-		"no previous":    {HeadCommitter: "new@x", HeadCommittedAt: now.Add(-24 * time.Hour)},
-		"no head":        {PreviousCommitter: "old@x", HeadCommittedAt: now.Add(-24 * time.Hour)},
+		"no previous":    {HeadCommitter: "new@x", HeadCommittedAt: now.Add(-24 * time.Hour), HeadCommitterFirstAt: now.Add(-24 * time.Hour)},
+		"no head":        {PreviousCommitter: "old@x", HeadCommittedAt: now.Add(-24 * time.Hour), HeadCommitterFirstAt: now.Add(-24 * time.Hour)},
 	} {
 		if f := findingsFor(maintainerChangeRule{}.Check(&Context{History: p}), "maintainer-change"); len(f) != 0 {
 			t.Errorf("%s flagged: %v", name, f)

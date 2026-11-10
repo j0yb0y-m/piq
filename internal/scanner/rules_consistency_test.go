@@ -3,6 +3,7 @@ package scanner
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/j0yb0y-m/piq/internal/history"
 	"github.com/morganamilo/go-srcinfo"
@@ -89,7 +90,11 @@ func TestChecksumCompletenessMentionsSkip(t *testing.T) {
 
 func TestParuFixtureHasNoConsistencyOrProvenanceFindings(t *testing.T) {
 	ctx := parseFixturePair(t, "testdata/benign/paru.PKGBUILD", "testdata/benign/paru.SRCINFO")
-	ctx.History = &history.Provenance{HeadCommitter: "a@x", PreviousCommitter: "a@x", Maintainer: "a@x", CommitCount: 200, Committers: map[string]int{"a@x": 200}}
+	ctx.History = &history.Provenance{
+		HeadCommitter: "a@x", PreviousCommitter: "a@x", Maintainer: "a@x",
+		CommitCount: 200, Committers: map[string]int{"a@x": 200},
+		HeadCommittedAt: time.Now(),
+	}
 	for _, rule := range []string{"srcinfo-divergence", "undeclared-fetch", "maintainer-change", "maintainer-drift"} {
 		if f := findingsFor(ScoreWith(ctx, Options{}).Findings, rule); len(f) != 0 {
 			t.Errorf("%s: %v", rule, f)
