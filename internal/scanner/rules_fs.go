@@ -29,12 +29,6 @@ var sensitivePaths = []string{
 	"~/.bashrc", "~/.profile", "~/.config/fish",
 }
 
-// writeCommands are commands that commonly write to the filesystem.
-var writeCommands = map[string]bool{
-	"cp": true, "mv": true, "echo": true, "install": true, "tee": true,
-	"cat": true, "printf": true, "mkdir": true, "chmod": true, "chown": true,
-}
-
 func (suspiciousWriteRule) Check(ctx *Context) []Finding {
 	return ctx.ForEachFile(func(file *syntax.File, fname, _ string) []Finding {
 		var findings []Finding
@@ -43,27 +37,67 @@ func (suspiciousWriteRule) Check(ctx *Context) []Finding {
 			if !ok {
 				return true
 			}
+			seen := map[string]bool{}
+			add := func(path, rendered string) {
+				pat, ok := sensitivePath(path)
+				if !ok || seen[pat] {
+					return
+				}
+				seen[pat] = true
+				findings = append(findings, Finding{
+					Rule:     "suspicious-write-path",
+					Severity: Critical,
+					Line:     lineOf(stmt),
+					Message:  "In " + fname + ": appears to write to " + pat + " (`" + rendered + "`), well outside anything a package build should touch. This is a classic persistence technique — cron jobs, systemd units, and shell rc files are exactly how malware survives a reboot.",
+				})
+			}
+
+			// A redirection target is always a destination.
+			for _, redir := range stmt.Redirs {
+				if redir == nil || redir.Word == nil {
+					continue
+				}
+				add(unquote(pkgbuild.Render(redir.Word)), pkgbuild.Render(stmt))
+			}
+
 			call, ok := stmt.Cmd.(*syntax.CallExpr)
 			if !ok {
 				return true
 			}
-			name := pkgbuild.CommandName(call)
-			if !writeCommands[name] {
-				return true
-			}
-			rendered := pkgbuild.Render(stmt)
-			for _, p := range sensitivePaths {
-				if strings.Contains(rendered, p) {
-					findings = append(findings, Finding{
-						Rule:     "suspicious-write-path",
-						Severity: Critical,
-						Line:     lineOf(stmt),
-						Message:  "In " + fname + ": appears to write to " + p + " (`" + rendered + "`), well outside anything a package build should touch. This is a classic persistence technique — cron jobs, systemd units, and shell rc files are exactly how malware survives a reboot.",
-					})
+			rendered := pkgbuild.Render(call)
+			switch effectiveCommandName(call) {
+			case "tee":
+				for _, arg := range call.Args {
+					add(unquote(pkgbuild.Render(arg)), rendered)
+				}
+			case "cp", "mv", "install":
+				// The final argument is the destination.
+				if len(call.Args) > 0 {
+					add(unquote(pkgbuild.Render(call.Args[len(call.Args)-1])), rendered)
+				}
+			case "chmod", "chown":
+				for _, arg := range call.Args {
+					add(unquote(pkgbuild.Render(arg)), rendered)
 				}
 			}
 			return true
 		})
 		return findings
 	})
+}
+
+// sensitivePath reports the sensitive prefix that a destination path
+// matches, if any.
+func sensitivePath(path string) (string, bool) {
+	lower := strings.ToLower(path)
+	for _, p := range sensitivePaths {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+func unquote(s string) string {
+	return strings.Trim(strings.TrimSpace(s), `"'`)
 }

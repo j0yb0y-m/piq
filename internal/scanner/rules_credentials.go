@@ -8,55 +8,155 @@ import (
 )
 
 func init() {
-	Register(credentialRule{})
+	Register(credentialReferenceRule{})
+	Register(credentialTheftRule{})
 	Register(exfilRule{})
 }
 
-// credentialRule flags code that attempts to read or exfiltrate
-// credentials, SSH keys, browser cookies, environment secrets, or
-// cryptocurrency wallets.
-type credentialRule struct{}
-
-func (credentialRule) Name() string { return "credential-theft" }
-
-func (credentialRule) Points() int { return 100 }
-
-func (credentialRule) Gate() bool { return true }
-
-var credentialPatterns = []string{
-	"$HOME/.ssh", "~/.ssh", "id_rsa", "id_ed25519", "known_hosts",
-	".aws/credentials", "~/.aws", ".kube/config", "~/.kube",
-	"cookie.db", "~/Library/Application Support",
-	"wallet.dat", "keystore", "seedphrase", "mnemonic",
-	"~/.gnupg", "$HOME/.gnupg", "secret", "token",
-	".npmrc", "~/.netrc", "passwd", "shadow",
+// credentialCategory groups the path fragments that point at one kind
+// of secret. A file that mentions several fragments of the same kind
+// (say ~/.ssh and id_rsa) produces one finding, not several.
+type credentialCategory struct {
+	label    string
+	patterns []string
 }
 
-func (credentialRule) Check(ctx *Context) []Finding {
-	// Regex match is unreliable for shell text; use substring matching
-	// but only when the context also implies reading/copying/uploading.
-	lower := strings.ToLower(ctx.Raw)
-	for _, s := range ctx.Scriptlets {
-		lower += "\n" + strings.ToLower(s.Raw)
-	}
+var credentialCategories = []credentialCategory{
+	{
+		label:    "SSH keys",
+		patterns: []string{"$HOME/.ssh", "~/.ssh", "id_rsa", "id_ed25519", "known_hosts"},
+	},
+	{
+		label:    "AWS credentials",
+		patterns: []string{"$HOME/.aws", "~/.aws", ".aws/credentials"},
+	},
+	{
+		label:    "Kubernetes config",
+		patterns: []string{"$HOME/.kube", "~/.kube", ".kube/config"},
+	},
+	{
+		label:    "browser cookies",
+		patterns: []string{"cookie.db", "~/library/application support"},
+	},
+	{
+		label:    "cryptocurrency wallets",
+		patterns: []string{"wallet.dat", "keystore", "seedphrase", "mnemonic"},
+	},
+	{
+		label:    "GnuPG keyrings",
+		patterns: []string{"$HOME/.gnupg", "~/.gnupg"},
+	},
+	{
+		label:    "registry credentials",
+		patterns: []string{".npmrc", "~/.netrc", "$HOME/.netrc"},
+	},
+}
 
-	var findings []Finding
-	already := map[string]bool{}
-	for _, pat := range credentialPatterns {
-		if !strings.Contains(lower, pat) {
-			continue
+// credentialReferenceRule flags a package that merely names a
+// credential path. Reading one is worth reviewing, but it is not by
+// itself theft: legitimate tooling occasionally inspects these paths.
+type credentialReferenceRule struct{}
+
+func (credentialReferenceRule) Name() string { return "credential-reference" }
+
+func (credentialReferenceRule) Points() int { return 20 }
+
+func (credentialReferenceRule) Gate() bool { return false }
+
+func (credentialReferenceRule) Check(ctx *Context) []Finding {
+	return ctx.ForEachFile(func(_ *syntax.File, fname, raw string) []Finding {
+		lower := strings.ToLower(raw)
+		var findings []Finding
+		for _, cat := range credentialCategories {
+			pat, ok := matchCredentialCategory(lower, cat)
+			if !ok {
+				continue
+			}
+			findings = append(findings, Finding{
+				Rule:     "credential-reference",
+				Severity: Warning,
+				File:     fname,
+				Message:  "References " + cat.label + " (`" + pat + "`). A clean package build has no reason to read this path; treat it as a prompt to inspect the surrounding code.",
+			})
 		}
-		if already[pat] {
-			continue
+		return findings
+	})
+}
+
+// credentialTheftRule escalates the reference to theft only when the
+// same file also carries a network command that could send the data
+// out. The gated data-exfiltration rule still catches a local file
+// piped straight into curl/wget.
+type credentialTheftRule struct{}
+
+func (credentialTheftRule) Name() string { return "credential-theft" }
+
+func (credentialTheftRule) Points() int { return 100 }
+
+func (credentialTheftRule) Gate() bool { return false }
+
+var credentialEgressCommands = map[string]bool{
+	"curl": true, "wget": true, "nc": true, "ncat": true,
+	"socat": true, "scp": true, "rsync": true, "ssh": true,
+}
+
+func (credentialTheftRule) Check(ctx *Context) []Finding {
+	return ctx.ForEachFile(func(file *syntax.File, fname, raw string) []Finding {
+		lower := strings.ToLower(raw)
+		cat, pat, ok := firstCredentialMatch(lower)
+		if !ok {
+			return nil
 		}
-		already[pat] = true
-		findings = append(findings, Finding{
+		if !hasNetworkCommand(file) {
+			return nil
+		}
+		return []Finding{{
 			Rule:     "credential-theft",
 			Severity: Critical,
-			Message:  "Package content references a credential or wallet path: `" + pat + "`. Malware that steals SSH keys, cloud credentials, cookies, or crypto wallets uses exactly these paths.",
-		})
+			File:     fname,
+			Message:  "References " + cat.label + " (`" + pat + "`) in a file that also invokes a network command. Reading a credential path and having egress in the same package is the shape of credential theft — do not install.",
+		}}
+	})
+}
+
+func firstCredentialMatch(lower string) (credentialCategory, string, bool) {
+	for _, cat := range credentialCategories {
+		if pat, ok := matchCredentialCategory(lower, cat); ok {
+			return cat, pat, true
+		}
 	}
-	return findings
+	return credentialCategory{}, "", false
+}
+
+func matchCredentialCategory(lower string, cat credentialCategory) (string, bool) {
+	for _, pat := range cat.patterns {
+		if strings.Contains(lower, pat) {
+			return pat, true
+		}
+	}
+	return "", false
+}
+
+func hasNetworkCommand(file *syntax.File) bool {
+	if file == nil {
+		return false
+	}
+	found := false
+	syntax.Walk(file, func(n syntax.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*syntax.CallExpr)
+		if !ok {
+			return true
+		}
+		if credentialEgressCommands[effectiveCommandName(call)] {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // exfilRule flags a network-transfer of locally-sourced data (not a
@@ -126,4 +226,10 @@ func commandWord(s string) string {
 		return name
 	}
 	return ""
+}
+
+// effectiveCommandName returns the lowercased basename of the command
+// a call invokes, looking through sudo/env-style wrappers.
+func effectiveCommandName(c *syntax.CallExpr) string {
+	return commandWord(pkgbuild.EffectiveCommand(c))
 }

@@ -92,9 +92,9 @@ var corpusSuspicious = []struct {
 		minRule: "checksum-completeness",
 	},
 	{
-		name:    "obfuscation-base64",
-		src:     `echo "aGVsbG8=" | base64 -d | bash`,
-		minRule: "obfuscation",
+		name:    "ssh-key-reference",
+		src:     `cp ~/.ssh/id_rsa /tmp/stolen`,
+		minRule: "credential-reference",
 	},
 	{
 		name:    "persistence-systemd",
@@ -146,9 +146,9 @@ var corpusMalicious = []struct {
 		minRule: "destructive",
 	},
 	{
-		name:    "ssh-key-theft",
-		src:     `cp ~/.ssh/id_rsa /tmp/stolen`,
-		minRule: "credential-theft",
+		name:    "obfuscation-base64",
+		src:     `echo "aGVsbG8=" | base64 -d | bash`,
+		minRule: "obfuscation",
 	},
 	{
 		name:    "data-exfil-to-curl",

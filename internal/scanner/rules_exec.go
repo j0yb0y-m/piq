@@ -1,8 +1,6 @@
 package scanner
 
 import (
-	"strings"
-
 	"github.com/j0yb0y-m/piq/internal/pkgbuild"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -21,6 +19,12 @@ func (pipeToShellRule) Points() int { return 95 }
 
 func (pipeToShellRule) Gate() bool { return true }
 
+var shellCommands = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
+}
+
+var downloadCommands = map[string]bool{"curl": true, "wget": true}
+
 func (pipeToShellRule) Check(ctx *Context) []Finding {
 	return ctx.ForEachFile(func(file *syntax.File, fname, _ string) []Finding {
 		var findings []Finding
@@ -32,14 +36,8 @@ func (pipeToShellRule) Check(ctx *Context) []Finding {
 			if bc.Op != syntax.Pipe && bc.Op != syntax.PipeAll {
 				return true
 			}
-			left := strings.ToLower(pkgbuild.Render(bc.X))
-			right := strings.ToLower(pkgbuild.Render(bc.Y))
-
-			fetches := strings.Contains(left, "curl") || strings.Contains(left, "wget")
-			runsShell := strings.Contains(right, "bash") ||
-				strings.Contains(right, "zsh") ||
-				strings.HasPrefix(strings.TrimSpace(right), "sh ") ||
-				strings.TrimSpace(right) == "sh"
+			fetches := downloadCommands[effectiveCommandName(firstCall(bc.X))]
+			runsShell := shellCommands[effectiveCommandName(firstCall(bc.Y))]
 
 			if fetches && runsShell {
 				findings = append(findings, Finding{
@@ -53,6 +51,15 @@ func (pipeToShellRule) Check(ctx *Context) []Finding {
 		})
 		return findings
 	})
+}
+
+// firstCall returns the call expression at the head of a statement.
+func firstCall(stmt *syntax.Stmt) *syntax.CallExpr {
+	if stmt == nil {
+		return nil
+	}
+	call, _ := stmt.Cmd.(*syntax.CallExpr)
+	return call
 }
 
 type evalRule struct{}
