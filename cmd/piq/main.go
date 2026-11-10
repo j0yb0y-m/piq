@@ -12,10 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/j0yb0y-m/piq/internal/aur"
+	"github.com/j0yb0y-m/piq/internal/build"
 	"github.com/j0yb0y-m/piq/internal/inspect"
 	"github.com/j0yb0y-m/piq/internal/report"
 	"github.com/j0yb0y-m/piq/internal/review"
-	"github.com/j0yb0y-m/piq/internal/sandbox"
 	"github.com/j0yb0y-m/piq/internal/scanner"
 	"github.com/j0yb0y-m/piq/internal/ui"
 )
@@ -147,32 +147,26 @@ func installCmd() *cobra.Command {
 				return nil
 			}
 
-			pkgDir := res.PkgDir
-
-			srcDir := filepath.Join(filepath.Dir(pkgDir), "src", res.Pkgbase)
-			pkgOutDir := filepath.Join(filepath.Dir(pkgDir), "pkg", res.Pkgbase)
-			os.MkdirAll(srcDir, 0o755)
-			os.MkdirAll(pkgOutDir, 0o755)
-
-			dirs := sandbox.BuildDirs{
-				SrcDir: srcDir,
-				PkgDir: pkgOutDir,
+			cache := filepath.Dir(res.PkgDir)
+			l, err := build.NewLayout(cache, res.Pkgbase)
+			if err != nil {
+				return err
 			}
 
 			ui.Printf("%s\n", ui.Notice("Phase 1/3: Fetching sources..."))
-			if err := sandbox.FetchPhase(dirs, pkgDir); err != nil {
+			if err := build.Fetch(l, build.Options{AllowNet: true, Stdout: ui.Out(), Stderr: ui.Err()}); err != nil {
 				return fmt.Errorf("fetch phase: %w", err)
 			}
 
 			ui.Printf("%s\n", ui.Notice("Phase 2/3: Building in sandbox (no network)..."))
-			if err := sandbox.BuildPhase(dirs, pkgDir); err != nil {
+			if err := build.Build(l, build.Options{Stdout: ui.Out(), Stderr: ui.Err()}); err != nil {
 				return fmt.Errorf("build phase: %w", err)
 			}
 
 			ui.Printf("%s\n", ui.Notice("Phase 3/3: Inspecting built package..."))
-			entries, err := filepath.Glob(filepath.Join(pkgOutDir, "*.pkg.tar.zst"))
-			if err != nil || len(entries) == 0 {
-				return fmt.Errorf("no .pkg.tar.zst found in %s", pkgOutDir)
+			entries, err := build.Artifacts(l)
+			if err != nil {
+				return err
 			}
 
 			// Inspect all built packages (split packages support).
