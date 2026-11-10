@@ -76,7 +76,9 @@ func TestReadJSONFlagFromRootPersistentFlag(t *testing.T) {
 // TestNewRootCmdSetsJSONOutput verifies the root's PersistentPreRunE
 // publishes the parsed --json value in the package global handlers read.
 func TestNewRootCmdSetsJSONOutput(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
 	root := newRootCmd()
 	var got bool
 	root.AddCommand(&cobra.Command{Use: "probe", RunE: func(cmd *cobra.Command, args []string) error {

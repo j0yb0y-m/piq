@@ -53,7 +53,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&configPath, "config", "", "path to piq.toml (default: ~/.config/piq/piq.toml)")
 	root.PersistentFlags().Bool("json", false, "output in JSON format")
 
-	root.AddCommand(searchCmd(), scanCmd(), installCmd(), systemCmd(), hooksCmd())
+	root.AddCommand(searchCmd(), scanCmd(), installCmd(), systemCmd())
 	return root
 }
 

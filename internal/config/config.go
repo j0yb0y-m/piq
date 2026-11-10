@@ -6,7 +6,9 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,32 +16,22 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// errInvalidConfig marks configuration that failed validation.
+var errInvalidConfig = errors.New("invalid config")
+
 // Config is the top-level user configuration tree.
 type Config struct {
 	Severity  string  `toml:"severity"`  // minimum severity to block on: info|warning|critical
-	Threshold int     `toml:"threshold"` // minimum cumulative risk score to block on (0-100+)
+	Threshold int     `toml:"threshold"` // minimum cumulative risk score to block on (0-1000)
 	CacheDir  string  `toml:"cache_dir"`
-	Network   Network `toml:"network"`
 	Rules     Rules   `toml:"rules"`
-	Hooks     Hooks   `toml:"hooks"`
 	Sandbox   Sandbox `toml:"sandbox"`
 	Pacman    Pacman  `toml:"pacman"`
-}
-
-// Network controls network behavior during a scan/build.
-type Network struct {
-	NoScan bool `toml:"no_scan"` // skip the reputation / AUR metadata scan
 }
 
 // Rules lets users silence specific checks by rule ID.
 type Rules struct {
 	Ignore []string `toml:"ignore"`
-}
-
-// Hooks install paths for other AUR helpers (yay/paru).
-type Hooks struct {
-	Yay  string `toml:"yay"`
-	Paru string `toml:"paru"`
 }
 
 // Sandbox controls whether builds are wrapped in bubblewrap.
@@ -58,9 +50,7 @@ func Default() *Config {
 		Severity:  "warning",
 		Threshold: 80,
 		CacheDir:  defaultCacheDir(),
-		Network:   Network{NoScan: false},
 		Rules:     Rules{},
-		Hooks:     Hooks{},
 		Sandbox:   Sandbox{Enabled: nil},
 		Pacman:    Pacman{SudoCmd: "sudo"},
 	}
@@ -103,6 +93,9 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	applyEnv(cfg)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -111,13 +104,6 @@ func applyEnv(c *Config) {
 	str := func(key string, set func(string)) {
 		if v, ok := os.LookupEnv(key); ok {
 			set(v)
-		}
-	}
-	boolEnv := func(key string, set func(bool)) {
-		if v, ok := os.LookupEnv(key); ok {
-			if b, err := strconv.ParseBool(v); err == nil {
-				set(b)
-			}
 		}
 	}
 	intEnv := func(key string, set func(int)) {
@@ -131,7 +117,6 @@ func applyEnv(c *Config) {
 	str("PIQ_SEVERITY", func(v string) { c.Severity = v })
 	intEnv("PIQ_THRESHOLD", func(v int) { c.Threshold = v })
 	str("PIQ_CACHE_DIR", func(v string) { c.CacheDir = v })
-	boolEnv("PIQ_NETWORK_NO_SCAN", func(v bool) { c.Network.NoScan = v })
 	str("PIQ_SUDO_CMD", func(v string) { c.Pacman.SudoCmd = v })
 	str("PIQ_RULES_IGNORE", func(v string) {
 		for _, id := range strings.Split(v, ",") {
@@ -142,14 +127,45 @@ func applyEnv(c *Config) {
 	})
 }
 
+// Validate normalizes and checks configuration values. It is called by
+// Load after environment overrides have been applied.
+func (c *Config) Validate() error {
+	severity := strings.ToLower(strings.TrimSpace(c.Severity))
+	switch severity {
+	case "info", "warning", "critical":
+		c.Severity = severity
+	default:
+		return fmt.Errorf("%w: severity %q (want info, warning, or critical)", errInvalidConfig, c.Severity)
+	}
+
+	if c.Threshold < 0 || c.Threshold > 1000 {
+		return fmt.Errorf("%w: threshold %d out of range 0-1000", errInvalidConfig, c.Threshold)
+	}
+
+	if c.CacheDir != "" && !filepath.IsAbs(c.CacheDir) {
+		return fmt.Errorf("%w: cache_dir %q must be absolute", errInvalidConfig, c.CacheDir)
+	}
+
+	if len(strings.Fields(c.Pacman.SudoCmd)) == 0 {
+		return fmt.Errorf("%w: pacman.sudo_cmd must not be empty", errInvalidConfig)
+	}
+
+	return nil
+}
+
+// IgnoreSet returns the configured rule IDs as a set.
+func (c *Config) IgnoreSet() map[string]bool {
+	set := make(map[string]bool, len(c.Rules.Ignore))
+	for _, id := range c.Rules.Ignore {
+		set[id] = true
+	}
+	return set
+}
+
 // IgnoresRule reports whether the given rule ID is user-suppressed.
 func (c *Config) IgnoresRule(id string) bool {
-	for _, x := range c.Rules.Ignore {
-		if x == id || x == "*" {
-			return true
-		}
-	}
-	return false
+	set := c.IgnoreSet()
+	return set[id] || set["*"]
 }
 
 // SandboxEnabled resolves the effective sandbox setting.
@@ -157,14 +173,6 @@ func (c *Config) SandboxEnabled() bool {
 	if c.Sandbox.Enabled != nil {
 		return *c.Sandbox.Enabled
 	}
-	return bwrapAvailable()
-}
-
-func bwrapAvailable() bool {
-	_, err := os.Stat("/usr/bin/bwrap")
-	if err == nil {
-		return true
-	}
-	_, err = os.Stat("/bin/bwrap")
+	_, err := exec.LookPath("bwrap")
 	return err == nil
 }

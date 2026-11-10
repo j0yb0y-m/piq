@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -37,9 +38,6 @@ severity = "critical"
 threshold = 50
 cache_dir = "/tmp/piq-test"
 
-[network]
-no_scan = true
-
 [rules]
 ignore = ["typosquat", "reputation"]
 
@@ -62,9 +60,6 @@ sudo_cmd = "doas"
 	}
 	if cfg.CacheDir != "/tmp/piq-test" {
 		t.Errorf("expected cache_dir=/tmp/piq-test, got %q", cfg.CacheDir)
-	}
-	if !cfg.Network.NoScan {
-		t.Error("expected no_scan=true")
 	}
 	if len(cfg.Rules.Ignore) != 2 {
 		t.Fatalf("expected 2 ignored rules, got %d", len(cfg.Rules.Ignore))
@@ -98,7 +93,6 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("PIQ_SEVERITY", "info")
 	t.Setenv("PIQ_THRESHOLD", "25")
 	t.Setenv("PIQ_CACHE_DIR", "/env/test")
-	t.Setenv("PIQ_NETWORK_NO_SCAN", "true")
 	t.Setenv("PIQ_SUDO_CMD", "sudo -A")
 	t.Setenv("PIQ_RULES_IGNORE", "typosquat, reputation")
 
@@ -114,14 +108,55 @@ func TestEnvOverrides(t *testing.T) {
 	if cfg.CacheDir != "/env/test" {
 		t.Errorf("expected cache_dir=/env/test, got %q", cfg.CacheDir)
 	}
-	if !cfg.Network.NoScan {
-		t.Error("expected no_scan=true from env")
-	}
 	if cfg.Pacman.SudoCmd != "sudo -A" {
 		t.Errorf("expected sudo_cmd=sudo -A, got %q", cfg.Pacman.SudoCmd)
 	}
 	if len(cfg.Rules.Ignore) != 2 {
 		t.Errorf("expected 2 ignored rules from env, got %d", len(cfg.Rules.Ignore))
+	}
+}
+
+func TestValidateRejectsUnknownSeverity(t *testing.T) {
+	c := Default()
+	c.Severity = "paranoid"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestValidateRejectsNegativeThreshold(t *testing.T) {
+	c := Default()
+	c.Threshold = -1
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestValidateNormalizesSeverity(t *testing.T) {
+	c := Default()
+	c.Severity = "  WARNING "
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Severity != "warning" {
+		t.Errorf("severity = %q", c.Severity)
+	}
+}
+
+func TestIgnoreSet(t *testing.T) {
+	c := Default()
+	c.Rules.Ignore = []string{"reputation", "typosquat"}
+	if !c.IgnoreSet()["reputation"] || !c.IgnoreSet()["typosquat"] {
+		t.Fatal("missing rule")
+	}
+}
+
+func TestLoadRejectsInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "piq.toml")
+	os.WriteFile(path, []byte(`severity = "nope"`), 0o644)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected validation error")
 	}
 }
 
@@ -141,7 +176,11 @@ func TestSandboxEnabled(t *testing.T) {
 	}
 
 	// With nil — auto-detect based on bwrap presence
+	if _, err := exec.LookPath("bwrap"); err == nil {
+		t.Skip("bwrap is installed; cannot assert auto-detect is false")
+	}
 	cfg = &Config{Sandbox: Sandbox{Enabled: nil}}
-	// Just verify it doesn't panic; result depends on system
-	_ = cfg.SandboxEnabled()
+	if cfg.SandboxEnabled() {
+		t.Error("expected sandbox disabled without bwrap")
+	}
 }

@@ -23,7 +23,6 @@ Standard AUR helpers (yay, paru) install whatever you ask for. piq sits between 
 - **Update-diff** — on reinstall, shows exactly what changed since your last review and flags newly-introduced dangers.
 - **Configurable via TOML** — `~/.config/piq/piq.toml` with environment variable overrides.
 - **JSON output** for scripting and CI integration.
-- **yay/paru hooks** to route AUR installs through piq automatically.
 - **`piq system`** audits all installed AUR packages in one pass.
 - **Bubblewrap sandbox** — builds run in an isolated namespace with no network (except source fetch) and no write access outside the build dirs.
 
@@ -84,10 +83,6 @@ no_scan = false         # skip AUR reputation scan
 
 [rules]
 ignore = ["typosquat"]  # silence specific rules by ID
-
-[hooks]
-yay  = "/usr/share/libalpm/hooks/90-piq-yay.hook"
-paru = "/usr/share/libalpm/hooks/90-piq-paru.hook"
 
 [sandbox]
 enabled = true          # false to disable bubblewrap (not recommended)
