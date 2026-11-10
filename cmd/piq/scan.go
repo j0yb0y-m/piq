@@ -148,31 +148,12 @@ func collectLocalFiles(ctx *scanner.Context, pkgDir string) {
 	}
 }
 
-// scoreWithConfig runs the full rule set and produces a score, but
-// drops findings from rules the user has ignored in config.
+// scoreWithConfig runs the config policy through the scanner so ignored
+// rules never contribute findings, points, or gate hits.
 func scoreWithConfig(ctx *scanner.Context) *scanner.Score {
-	score := scanner.NewScore(ctx)
-	if cfg == nil || len(cfg.Rules.Ignore) == 0 {
-		return score
-	}
-	filtered := score.Findings[:0]
-	for _, f := range score.Findings {
-		if cfg.IgnoresRule(f.Rule) {
-			continue
-		}
-		filtered = append(filtered, f)
-	}
-	score.Findings = filtered
-	// Recompute total after ignoring rules (gate hits stay as-is).
-	total := 0
-	for rule, pts := range score.PerRule {
-		if cfg.IgnoresRule(rule) {
-			continue
-		}
-		total += pts
-	}
-	score.Total = total
-	return score
+	opts := scanner.Options{Ignore: cfg.IgnoreSet(), Threshold: cfg.Threshold}
+	opts.MinSeverity, _ = scanner.ParseSeverity(cfg.Severity)
+	return scanner.ScoreWith(ctx, opts)
 }
 
 // printFindings renders findings grouped by severity with the verdict.
