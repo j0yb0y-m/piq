@@ -59,14 +59,14 @@ type LocalSource struct {
 // itself, its parsed AST and metadata, any companion scriptlets and
 // referenced local files, AUR reputation info, and provenance history.
 type Context struct {
-	Raw        string            // PKGBUILD literal source text
-	AST        *syntax.File      // PKGBUILD shell AST
+	Raw        string       // PKGBUILD literal source text
+	AST        *syntax.File // PKGBUILD shell AST
 	Metadata   *pkgbuild.Metadata
-	AURInfo    *aur.Package      // may be nil for a purely-local scan
-	Scriptlets []Scriptlet       // *.install companion scriptlets
-	Sources    []LocalSource     // local files referenced by the PKGBUILD
-	History    interface{}       // *history.Provenance, if inspected
-	File       string            // path of the PKGBUILD on disk, if any
+	AURInfo    *aur.Package  // may be nil for a purely-local scan
+	Scriptlets []Scriptlet   // *.install companion scriptlets
+	Sources    []LocalSource // local files referenced by the PKGBUILD
+	History    interface{}   // *history.Provenance, if inspected
+	File       string        // path of the PKGBUILD on disk, if any
 }
 
 // ScoredRule is a Rule that contributes risk points toward a verdict.

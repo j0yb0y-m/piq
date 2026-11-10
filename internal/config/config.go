@@ -16,14 +16,14 @@ import (
 
 // Config is the top-level user configuration tree.
 type Config struct {
-	Severity  string     `toml:"severity"`  // minimum severity to block on: info|warning|critical
-	Threshold int        `toml:"threshold"` // minimum cumulative risk score to block on (0-100+)
-	CacheDir  string     `toml:"cache_dir"`
-	Network   Network    `toml:"network"`
-	Rules     Rules      `toml:"rules"`
-	Hooks     Hooks      `toml:"hooks"`
-	Sandbox   Sandbox    `toml:"sandbox"`
-	Pacman    Pacman     `toml:"pacman"`
+	Severity  string  `toml:"severity"`  // minimum severity to block on: info|warning|critical
+	Threshold int     `toml:"threshold"` // minimum cumulative risk score to block on (0-100+)
+	CacheDir  string  `toml:"cache_dir"`
+	Network   Network `toml:"network"`
+	Rules     Rules   `toml:"rules"`
+	Hooks     Hooks   `toml:"hooks"`
+	Sandbox   Sandbox `toml:"sandbox"`
+	Pacman    Pacman  `toml:"pacman"`
 }
 
 // Network controls network behavior during a scan/build.
@@ -38,7 +38,7 @@ type Rules struct {
 
 // Hooks install paths for other AUR helpers (yay/paru).
 type Hooks struct {
-	Yay string `toml:"yay"`
+	Yay  string `toml:"yay"`
 	Paru string `toml:"paru"`
 }
 

@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/j0yb0y-m/piq/internal/aur"
 	"github.com/j0yb0y-m/piq/internal/alpm"
+	"github.com/j0yb0y-m/piq/internal/aur"
 	"github.com/j0yb0y-m/piq/internal/ui"
 )
 

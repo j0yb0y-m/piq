@@ -16,8 +16,8 @@ func TestVerdictTrusted(t *testing.T) {
 source=(https://example.com/hello-1.0.tar.gz)
 sha256sums=(abc123)`
 	meta := &srcinfo.Srcinfo{
-		Pkgbase: "hello",
-		Source:  []srcinfo.ArchString{{Value: "https://example.com/hello-1.0.tar.gz"}},
+		Pkgbase:    "hello",
+		Source:     []srcinfo.ArchString{{Value: "https://example.com/hello-1.0.tar.gz"}},
 		SHA256Sums: []srcinfo.ArchString{{Value: "abc123"}},
 	}
 	p, _ := pkgbuild.Parse(strings.NewReader(src), "PKGBUILD")
@@ -283,8 +283,8 @@ func TestForEachFile(t *testing.T) {
 	scriptSrc := `echo post_install`
 	sp, _ := pkgbuild.Parse(strings.NewReader(scriptSrc), "foo.install")
 	ctx := &Context{
-		Raw:  src,
-		AST:  p,
+		Raw: src,
+		AST: p,
 		Scriptlets: []Scriptlet{
 			{Name: "foo.install", Raw: scriptSrc, AST: sp},
 		},

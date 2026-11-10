@@ -9,11 +9,11 @@ import (
 type Verdict int
 
 const (
-	Trusted Verdict = iota // no findings, checksums present, nothing of note
-	OK                     // only INFO-level noise; ready to install
-	Sketchy                // one or more Warning-level concerns
-	Suspicious             // serious concerns / high cumulative score
-	Malicious              // an unambiguous indicator of malice
+	Trusted    Verdict = iota // no findings, checksums present, nothing of note
+	OK                        // only INFO-level noise; ready to install
+	Sketchy                   // one or more Warning-level concerns
+	Suspicious                // serious concerns / high cumulative score
+	Malicious                 // an unambiguous indicator of malice
 )
 
 func (v Verdict) String() string {
@@ -42,11 +42,11 @@ const (
 
 // Score is the aggregated, per-rule breakdown of a scan.
 type Score struct {
-	Verdict   Verdict
-	Total     int
-	PerRule   map[string]int
-	GateHits  []string
-	Findings  []Finding
+	Verdict  Verdict
+	Total    int
+	PerRule  map[string]int
+	GateHits []string
+	Findings []Finding
 }
 
 // NewScore runs every registered rule, buckets findings by rule,

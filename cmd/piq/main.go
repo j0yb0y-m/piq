@@ -125,10 +125,10 @@ func printJSON(res *scanResult) error {
 		Message  string `json:"message"`
 	}
 	type resultJSON struct {
-		Pkgbase  string         `json:"pkgbase"`
-		Verdict  string         `json:"verdict"`
-		Risk     int            `json:"risk_score"`
-		Findings []findingJSON  `json:"findings"`
+		Pkgbase  string        `json:"pkgbase"`
+		Verdict  string        `json:"verdict"`
+		Risk     int           `json:"risk_score"`
+		Findings []findingJSON `json:"findings"`
 	}
 	out := resultJSON{
 		Pkgbase: res.Pkgbase,

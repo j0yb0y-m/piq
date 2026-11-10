@@ -45,18 +45,18 @@ var corpusSuspicious = []struct {
 	minRule string
 }{
 	{
-		name: "eval-usage",
-		src:  `eval "$CUSTOM_FLAGS"`,
+		name:    "eval-usage",
+		src:     `eval "$CUSTOM_FLAGS"`,
 		minRule: "eval-usage",
 	},
 	{
-		name: "privesc-in-build",
-		src:  `sudo make install`,
+		name:    "privesc-in-build",
+		src:     `sudo make install`,
 		minRule: "privilege-escalation",
 	},
 	{
-		name: "write-to-bashrc",
-		src:  `echo "export PATH=$PATH:/opt/evil" >> ~/.bashrc`,
+		name:    "write-to-bashrc",
+		src:     `echo "export PATH=$PATH:/opt/evil" >> ~/.bashrc`,
 		minRule: "suspicious-write-path",
 	},
 	{
@@ -77,9 +77,9 @@ var corpusSuspicious = []struct {
 		minRule: "skipped-checksum",
 	},
 	{
-		name: "typosquat",
-		src:  `pkgname=firefoox`,
-		meta: &srcinfo.Srcinfo{Pkgbase: "firefoox"},
+		name:    "typosquat",
+		src:     `pkgname=firefoox`,
+		meta:    &srcinfo.Srcinfo{Pkgbase: "firefoox"},
 		minRule: "typosquat",
 	},
 	{
