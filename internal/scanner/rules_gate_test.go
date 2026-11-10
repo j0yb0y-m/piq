@@ -211,6 +211,18 @@ func glob(t *testing.T, pattern string) []string {
 
 var fixtureScriptletRe = regexp.MustCompile(`([A-Za-z0-9_.@+-]+\.install)\b`)
 
+// parseFixturePair parses a PKGBUILD fixture together with its .SRCINFO.
+func parseFixturePair(t *testing.T, pkgbuildPath, srcinfoPath string) *Context {
+	t.Helper()
+	ctx := parseFixture(t, pkgbuildPath)
+	meta, err := pkgbuild.LoadSrcinfo(srcinfoPath)
+	if err != nil {
+		t.Fatalf("parse .SRCINFO %s: %v", srcinfoPath, err)
+	}
+	ctx.Metadata = meta
+	return ctx
+}
+
 // parseFixture parses a PKGBUILD fixture and attaches any referenced
 // *.install scriptlets that exist next to it.
 func parseFixture(t *testing.T, path string) *Context {

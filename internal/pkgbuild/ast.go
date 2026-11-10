@@ -25,6 +25,62 @@ func Render(n syntax.Node) string {
 	return b.String()
 }
 
+// WordText returns the literal text of a word with surrounding quotes
+// removed. Parameter expansions are preserved in $name form — including
+// expansions that were double-quoted — so callers can resolve them
+// themselves. It returns "" when the word contains a non-literal
+// construct such as command substitution.
+func WordText(w *syntax.Word) string {
+	if w == nil {
+		return ""
+	}
+	var b strings.Builder
+	if !writeWordText(&b, w.Parts) {
+		return ""
+	}
+	return b.String()
+}
+
+func writeWordText(b *strings.Builder, parts []syntax.WordPart) bool {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			if !writeWordText(b, p.Parts) {
+				return false
+			}
+		case *syntax.ParamExp:
+			name, ok := plainParamName(p)
+			if !ok {
+				return false
+			}
+			b.WriteString("$")
+			b.WriteString(name)
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// plainParamName returns the name of a simple $name/${name} expansion.
+// Expansions with operators (${a:-b}, ${#a}, ${a[i]}, ...) are not
+// literal enough to compare, so they report false.
+func plainParamName(p *syntax.ParamExp) (string, bool) {
+	if p == nil || p.Param == nil {
+		return "", false
+	}
+	if p.Flags != nil || p.Excl || p.Length || p.Width || p.IsSet || p.NestedParam != nil ||
+		p.Index != nil || len(p.Modifiers) > 0 || p.Slice != nil || p.Repl != nil ||
+		p.Names != 0 || p.Exp != nil {
+		return "", false
+	}
+	return p.Param.Value, true
+}
+
 // CommandName returns the literal command being invoked by a call
 // expression — "curl", "eval", "sudo", whatever Args[0] renders to.
 // Returns "" for a bare variable assignment with no command.

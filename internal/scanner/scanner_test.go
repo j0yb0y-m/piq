@@ -155,39 +155,6 @@ func TestInsecureSourceURLClean(t *testing.T) {
 	}
 }
 
-func TestSkippedChecksum(t *testing.T) {
-	meta := &srcinfo.Srcinfo{}
-	meta.Source = []srcinfo.ArchString{
-		{Value: "https://example.com/file.tar.gz"},
-	}
-	meta.SHA256Sums = []srcinfo.ArchString{
-		{Value: "SKIP"},
-	}
-	ctx := &Context{Metadata: meta}
-	findings := skippedChecksumRule{}.Check(ctx)
-	if len(findings) == 0 {
-		t.Fatal("expected skipped-checksum finding, got none")
-	}
-	if findings[0].Severity != Warning {
-		t.Errorf("expected Warning severity, got %v", findings[0].Severity)
-	}
-}
-
-func TestSkippedChecksumVCSClean(t *testing.T) {
-	meta := &srcinfo.Srcinfo{}
-	meta.Source = []srcinfo.ArchString{
-		{Value: "git+https://github.com/foo/bar.git#commit=abc123"},
-	}
-	meta.SHA256Sums = []srcinfo.ArchString{
-		{Value: "SKIP"},
-	}
-	ctx := &Context{Metadata: meta}
-	findings := findingsFor(skippedChecksumRule{}.Check(ctx), "skipped-checksum")
-	if len(findings) != 0 {
-		t.Errorf("expected no skipped-checksum findings for VCS source, got %d", len(findings))
-	}
-}
-
 func TestTyposquat(t *testing.T) {
 	meta := &srcinfo.Srcinfo{}
 	meta.Pkgbase = "firefoox"

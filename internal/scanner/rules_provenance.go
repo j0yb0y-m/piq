@@ -10,7 +10,7 @@ import (
 func init() {
 	Register(maintainerChangeRule{})
 	Register(recentCommitsRule{})
-	Register(authorDriftRule{})
+	Register(maintainerDriftRule{})
 }
 
 func provOf(ctx *Context) *history.Provenance {
@@ -20,9 +20,14 @@ func provOf(ctx *Context) *history.Provenance {
 	return nil
 }
 
-// maintainerChangeRule flags repos where the committer(s) differ from
-// the current maintainer — i.e. the package changed hands recently,
-// which is exactly how takeovers of abandoned packages get shipped.
+// provenanceWindow bounds how recent a handover or drift signal must be.
+// A real takeover is interesting right after it happens; the same shape
+// in ancient history is normal project churn.
+const provenanceWindow = 180 * 24 * time.Hour
+
+// maintainerChangeRule flags a recent handover: HEAD's committer
+// differs from the previous distinct committer and HEAD is fresh.
+// Abandoned-package takeovers are a leading AUR attack vector.
 type maintainerChangeRule struct{}
 
 func (maintainerChangeRule) Name() string { return "maintainer-change" }
@@ -33,28 +38,20 @@ func (maintainerChangeRule) Gate() bool { return false }
 
 func (maintainerChangeRule) Check(ctx *Context) []Finding {
 	p := provOf(ctx)
-	if p == nil || p.AuthorChanged() == nil {
+	if p == nil || p.HeadCommitter == "" || p.PreviousCommitter == "" {
 		return nil
 	}
-	if len(p.AuthorChanged()) == 0 {
+	if p.HeadCommitter == p.PreviousCommitter {
+		return nil
+	}
+	if p.HeadCommittedAt.IsZero() || time.Since(p.HeadCommittedAt) >= provenanceWindow {
 		return nil
 	}
 	return []Finding{{
 		Rule:     "maintainer-change",
 		Severity: Warning,
-		Message:  "Package history shows commits from maintainer(s) other than the current one (" + joinStr(p.AuthorChanged()) + "). If this project recently changed hands, treat the modern history with extra caution — abandoned-package takeovers are a leading AUR attack vector.",
+		Message:  "Package history shows a recent committer change from " + p.PreviousCommitter + " to " + p.HeadCommitter + " within the last 180 days. Abandoned-package takeovers are a leading AUR attack vector; review what changed at and after the handover.",
 	}}
-}
-
-func joinStr(ss []string) string {
-	out := ""
-	for i, s := range ss {
-		if i > 0 {
-			out += ", "
-		}
-		out += s
-	}
-	return out
 }
 
 // recentCommitsRule flags packages whose newest commit is very fresh —
@@ -82,33 +79,33 @@ func (recentCommitsRule) Check(ctx *Context) []Finding {
 	return nil
 }
 
-// authorDriftRule flags the specific takeover pattern: the current
-// maintainer has authored very few commits relative to the whole
-// history, i.e. the maintainer identity is newer than the code.
-type authorDriftRule struct{}
+// maintainerDriftRule flags the specific takeover pattern: the head
+// committer has committed very few of the commits relative to the whole
+// history, i.e. the maintainer identity is newer than the code. Only a
+// recent head commit makes this interesting.
+type maintainerDriftRule struct{}
 
-func (authorDriftRule) Name() string { return "maintainer-drift" }
+func (maintainerDriftRule) Name() string { return "maintainer-drift" }
 
-func (authorDriftRule) Points() int { return 50 }
+func (maintainerDriftRule) Points() int { return 50 }
 
-func (authorDriftRule) Gate() bool { return false }
+func (maintainerDriftRule) Gate() bool { return false }
 
-func (authorDriftRule) Check(ctx *Context) []Finding {
+func (maintainerDriftRule) Check(ctx *Context) []Finding {
 	p := provOf(ctx)
-	if p == nil {
+	if p == nil || p.HeadCommitter == "" || p.CommitCount <= 0 {
 		return nil
 	}
-	total := p.CommitCount
-	if total < 3 {
+	if p.HeadCommittedAt.IsZero() || time.Since(p.HeadCommittedAt) >= provenanceWindow {
 		return nil
 	}
-	mainCount := p.Committers[p.Maintainer]
-	if mainCount < total/3 {
-		return []Finding{{
-			Rule:     "maintainer-drift",
-			Severity: Warning,
-			Message:  "The current maintainer has authored only " + strconv.Itoa(mainCount) + " of " + strconv.Itoa(total) + " commits. The maintainer identity appears newer than most of the code — a takeover/abandonment pattern worth reviewing before trusting.",
-		}}
+	count := p.Committers[p.HeadCommitter]
+	if count*10 >= p.CommitCount {
+		return nil
 	}
-	return nil
+	return []Finding{{
+		Rule:     "maintainer-drift",
+		Severity: Warning,
+		Message:  "The current maintainer (" + p.HeadCommitter + ") has committed only " + strconv.Itoa(count) + " of " + strconv.Itoa(p.CommitCount) + " commits. The maintainer identity appears newer than most of the code — a takeover/abandonment pattern worth reviewing before trusting.",
+	}}
 }

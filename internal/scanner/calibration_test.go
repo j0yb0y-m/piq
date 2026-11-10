@@ -68,13 +68,13 @@ var corpusSuspicious = []struct {
 		minRule: "insecure-source-url",
 	},
 	{
-		name: "skipped-checksum",
+		name: "skip-checksum",
 		src:  `source=(https://example.com/file.tar.gz)`,
 		meta: &srcinfo.Srcinfo{
 			Source:     []srcinfo.ArchString{{Value: "https://example.com/file.tar.gz"}},
 			SHA256Sums: []srcinfo.ArchString{{Value: "SKIP"}},
 		},
-		minRule: "skipped-checksum",
+		minRule: "checksum-completeness",
 	},
 	{
 		name:    "typosquat",

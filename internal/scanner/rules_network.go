@@ -26,8 +26,6 @@ var fetchCommands = map[string]bool{
 	"cargo": true, "go": true, "gem": true, "yarn": true, "pnpm": true, "bun": true,
 }
 
-var installishRe = regexp.MustCompile(`\b(install|add|i|get|fetch)\b`)
-
 func (undeclaredFetchRule) Check(ctx *Context) []Finding {
 	return ctx.ForEachFile(func(file *syntax.File, fname, _ string) []Finding {
 		var findings []Finding
@@ -40,19 +38,41 @@ func (undeclaredFetchRule) Check(ctx *Context) []Finding {
 			if !fetchCommands[name] {
 				return true
 			}
-			rendered := pkgbuild.Render(call)
-			if installishRe.MatchString(rendered) {
-				findings = append(findings, Finding{
-					Rule:     "undeclared-fetch",
-					Severity: Warning,
-					Line:     lineOf(n),
-					Message:  "In " + fname + ": runs `" + name + "` in a way that fetches new packages at build time (`" + rendered + "`), outside the checksummed `source=()` array. The June 2026 Atomic Arch campaign used exactly this pattern (`npm install atomic-lockfile` / `bun install js-digest`). Prefer vendoring or a proper checksummed `source=` entry.",
-				})
+			if !fetchingSubcommand(call.Args) {
+				return true
 			}
+			rendered := pkgbuild.Render(call)
+			findings = append(findings, Finding{
+				Rule:     "undeclared-fetch",
+				Severity: Warning,
+				Line:     lineOf(n),
+				Message:  "In " + fname + ": runs `" + name + "` in a way that fetches new packages at build time (`" + rendered + "`), outside the checksummed `source=()` array. The June 2026 Atomic Arch campaign used exactly this pattern (`npm install atomic-lockfile` / `bun install js-digest`). Prefer vendoring or a proper checksummed `source=` entry.",
+			})
 			return true
 		})
 		return findings
 	})
+}
+
+// fetchingSubcommand reports whether a package-manager call installs or
+// downloads new packages at build time. Locked fetches (cargo fetch,
+// go mod download, npm ci, ...) only materialise dependencies already
+// pinned by a lockfile in the checksummed source tree, so they are not
+// evidence of an undeclared network fetch.
+func fetchingSubcommand(args []*syntax.Word) bool {
+	if len(args) < 2 {
+		return false
+	}
+	switch pkgbuild.WordText(args[1]) {
+	case "fetch", "download", "ci":
+		return false
+	case "mod":
+		return false // go mod download: locked dependency fetch
+	case "install", "add", "i", "get":
+		return true
+	default:
+		return false
+	}
 }
 
 type insecureURLRule struct{}

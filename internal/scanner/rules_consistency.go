@@ -1,61 +1,23 @@
 package scanner
 
 import (
+	"strings"
+
 	"github.com/j0yb0y-m/piq/internal/pkgbuild"
 	"github.com/morganamilo/go-srcinfo"
 	"mvdan.cc/sh/v3/syntax"
 )
 
 func init() {
-	Register(skippedChecksumRule{})
 	Register(srcinfoDivergenceRule{})
 	Register(checksumCompletenessRule{})
 }
 
-type skippedChecksumRule struct{}
-
-func (skippedChecksumRule) Name() string { return "skipped-checksum" }
-
-func (skippedChecksumRule) Points() int { return 50 }
-
-func (skippedChecksumRule) Gate() bool { return false }
-
-func (skippedChecksumRule) Check(ctx *Context) []Finding {
-	meta := ctx.Metadata
-	if meta == nil {
-		return nil
-	}
-	var findings []Finding
-	for i, src := range meta.Source {
-		isVCS := containsAny(src.Value, "git+", "svn+", "hg+", "bzr+")
-		sum := checksumFor(meta, i)
-		if sum == "SKIP" && !isVCS {
-			findings = append(findings, Finding{
-				Rule:     "skipped-checksum",
-				Severity: Warning,
-				Message:  "Checksum for `" + src.Value + "` is set to SKIP on a non-VCS source. SKIP is normal for git/svn/hg (pinned by commit), but on a plain tarball it disables integrity verification entirely.",
-			})
-		}
-	}
-	return findings
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if len(s) >= len(sub) && (s[:len(sub)] == sub || indexOf(s, sub)) {
-			return true
-		}
-	}
-	return false
-}
-
-func indexOf(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+// isVCSSource reports whether a source=() entry is fetched with a VCS
+// scheme, where the commit pin replaces a content checksum.
+func isVCSSource(src string) bool {
+	return strings.Contains(src, "git+") || strings.Contains(src, "svn+") ||
+		strings.Contains(src, "hg+") || strings.Contains(src, "bzr+")
 }
 
 // extractArrayLiteral walks the top-level statements of a parsed shell
@@ -79,7 +41,7 @@ func extractArrayLiteral(file *syntax.File, name string) []string {
 			var elems []string
 			for _, elem := range assign.Array.Elems {
 				if elem.Value != nil {
-					elems = append(elems, pkgbuild.Render(elem.Value))
+					elems = append(elems, pkgbuild.WordText(elem.Value))
 				}
 			}
 			return elems
@@ -161,15 +123,84 @@ func (srcinfoDivergenceRule) Check(ctx *Context) []Finding {
 	var findings []Finding
 	pkgbuildSources := extractArrayLiteral(ctx.AST, "source")
 	for _, s := range pkgbuildSources {
-		if !containsSource(meta, s) {
+		if s == "" {
+			// WordText reports non-literal words (command substitution,
+			// arithmetic) as empty; there is nothing safe to compare.
+			continue
+		}
+		expanded, ok := expandPkgVars(s, meta)
+		if !ok {
+			// A source we cannot fully resolve is not evidence of
+			// divergence; skip it rather than guess.
+			continue
+		}
+		if !containsSource(meta, expanded) {
 			findings = append(findings, Finding{
 				Rule:     "srcinfo-divergence",
 				Severity: Critical,
-				Message:  "PKGBUILD declares source `" + s + "`, but .SRCINFO does not list it. Either the maintainer forgot to regenerate .SRCINFO, or the two were deliberately made to disagree. Review the actual PKGBUILD text.",
+				Message:  "PKGBUILD declares source `" + expanded + "`, but .SRCINFO does not list it. Either the maintainer forgot to regenerate .SRCINFO, or the two were deliberately made to disagree. Review the actual PKGBUILD text.",
 			})
 		}
 	}
 	return findings
+}
+
+// expandPkgVars resolves the standard version variables in a PKGBUILD
+// source string so it can be compared against .SRCINFO, which stores
+// the already-expanded value. It reports false when a variable is
+// unknown or malformed, leaving the caller to skip the comparison.
+func expandPkgVars(s string, meta *srcinfo.Srcinfo) (string, bool) {
+	if meta == nil {
+		return "", false
+	}
+	pkgname := meta.Pkgname
+	if pkgname == "" {
+		pkgname = meta.Pkgbase
+	}
+	values := map[string]string{
+		"pkgbase": meta.Pkgbase,
+		"pkgname": pkgname,
+		"pkgver":  meta.Pkgver,
+		"pkgrel":  meta.Pkgrel,
+		"epoch":   meta.Epoch,
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i + 1
+		var name string
+		if j < len(s) && s[j] == '{' {
+			end := strings.IndexByte(s[j:], '}')
+			if end < 0 {
+				return "", false
+			}
+			name = s[j+1 : j+end]
+			j += end + 1
+		} else {
+			start := j
+			for j < len(s) && (s[j] == '_' ||
+				s[j] >= 'a' && s[j] <= 'z' ||
+				s[j] >= 'A' && s[j] <= 'Z' ||
+				j > start && s[j] >= '0' && s[j] <= '9') {
+				j++
+			}
+			name = s[start:j]
+			if name == "" {
+				return "", false
+			}
+		}
+		val, ok := values[name]
+		if !ok {
+			return "", false
+		}
+		b.WriteString(val)
+		i = j
+	}
+	return b.String(), true
 }
 
 // checksumCompletenessRule flags sources that ship without any usable
@@ -196,8 +227,7 @@ func (checksumCompletenessRule) Check(ctx *Context) []Finding {
 		}
 		seen[src.Value] = true
 
-		isVCS := containsAny(src.Value, "git+", "svn+", "hg+", "bzr+")
-		if isVCS {
+		if isVCSSource(src.Value) {
 			continue // VCS sources are pinned by commit, not checksum
 		}
 
@@ -212,7 +242,14 @@ func (checksumCompletenessRule) Check(ctx *Context) []Finding {
 			continue
 		}
 
-		if sum := checksumFor(meta, i); sum == "" || sum == "SKIP" {
+		switch sum := checksumFor(meta, i); sum {
+		case "SKIP":
+			findings = append(findings, Finding{
+				Rule:     "checksum-completeness",
+				Severity: Warning,
+				Message:  "Source `" + src.Value + "` has its strongest checksum set to `SKIP`. SKIP is normal for VCS sources (git/svn/hg are pinned by commit), but on a plain tarball it disables integrity verification entirely — the fetched content is never checked.",
+			})
+		case "":
 			findings = append(findings, Finding{
 				Rule:     "checksum-completeness",
 				Severity: Warning,
