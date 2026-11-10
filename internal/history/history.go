@@ -19,22 +19,38 @@ type Provenance struct {
 	RepoPath     string
 	CommitCount  int
 	Committers   map[string]int // email -> number of commits
-	Maintainer   string         // primary/current maintainer email (mode)
+	Maintainer   string         // committer email of HEAD
 	RecentLog    []LogEntry     // most recent commits, newest first
 	NewestCommit time.Time
 	OldestCommit time.Time
+
+	HeadHash          string    // full hash of HEAD
+	HeadCommitter     string    // committer email of HEAD
+	PreviousCommitter string    // first committer after HEAD that differs from HeadCommitter
+	HeadCommittedAt   time.Time // committer timestamp of HEAD
 }
 
 // LogEntry is a single history entry.
 type LogEntry struct {
-	Hash    string
-	Author  string // name <email>
-	Message string
-	When    time.Time
+	Hash      string
+	Author    string // name <email>
+	Committer string // name <email>
+	Message   string
+	When      time.Time
 }
 
 // Inspect walks the local clone at repoDir and produces a Provenance.
 func Inspect(repoDir string) (*Provenance, error) {
+	return inspect(repoDir, 500, 5*365*24*time.Hour)
+}
+
+// errStopWalk lets the commit walk stop cleanly once a bound is reached.
+var errStopWalk = errors.New("stop history walk")
+
+// inspect walks at most maxCommits commits and stops at the first commit
+// older than maxAge. A non-positive bound disables it. The commit that
+// trips either bound is not included.
+func inspect(repoDir string, maxCommits int, maxAge time.Duration) (*Provenance, error) {
 	repo, err := git.PlainOpen(repoDir)
 	if err != nil {
 		if errors.Is(err, git.ErrRepositoryNotExists) {
@@ -47,42 +63,54 @@ func Inspect(repoDir string) (*Provenance, error) {
 	if err != nil {
 		return nil, err
 	}
-	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
+	iter, err := repo.Log(&git.LogOptions{From: head.Hash(), Order: git.LogOrderCommitterTime})
 	if err != nil {
 		return nil, err
 	}
 
 	prov := &Provenance{RepoPath: repoDir, Committers: map[string]int{}}
-	var firstCommitTime time.Time
+	var lastCommitTime time.Time
 	err = iter.ForEach(func(c *object.Commit) error {
-		if prov.NewestCommit.IsZero() {
-			prov.NewestCommit = c.Author.When
+		committedAt := c.Committer.When
+		if maxAge > 0 && time.Since(committedAt) > maxAge {
+			return errStopWalk
 		}
-		firstCommitTime = c.Author.When
+		if prov.CommitCount == 0 {
+			prov.HeadHash = c.Hash.String()
+			prov.HeadCommitter = c.Committer.Email
+			prov.HeadCommittedAt = committedAt
+			prov.NewestCommit = committedAt
+		} else if prov.PreviousCommitter == "" && c.Committer.Email != prov.HeadCommitter {
+			prov.PreviousCommitter = c.Committer.Email
+		}
+		lastCommitTime = committedAt
 		prov.CommitCount++
-		email := c.Author.Email
-		prov.Committers[email]++
+		prov.Committers[c.Committer.Email]++
 		prov.RecentLog = append(prov.RecentLog, LogEntry{
-			Hash:    c.Hash.String()[:8],
-			Author:  c.Author.Name + " <" + c.Author.Email + ">",
-			Message: firstLine(c.Message),
-			When:    c.Author.When,
+			Hash:      c.Hash.String()[:8],
+			Author:    c.Author.Name + " <" + c.Author.Email + ">",
+			Committer: c.Committer.Name + " <" + c.Committer.Email + ">",
+			Message:   firstLine(c.Message),
+			When:      committedAt,
 		})
+		if maxCommits > 0 && prov.CommitCount >= maxCommits {
+			return errStopWalk
+		}
 		return nil
 	})
 	iter.Close()
-	if err != nil {
+	if err != nil && !errors.Is(err, errStopWalk) {
 		return nil, err
 	}
 
-	prov.OldestCommit = firstCommitTime
+	prov.OldestCommit = lastCommitTime
 	if len(prov.RecentLog) > 20 {
 		prov.RecentLog = prov.RecentLog[:20]
 	}
 
-	// maintainer = committer with the most commits (the AUR sets the
-	// committer to the current maintainer on every push).
-	prov.Maintainer = mode(prov.Committers)
+	// The AUR sets the committer to the current maintainer on every push,
+	// so the HEAD committer is who holds the package now.
+	prov.Maintainer = prov.HeadCommitter
 	return prov, nil
 }
 
@@ -95,19 +123,8 @@ func firstLine(s string) string {
 	return s
 }
 
-func mode(counts map[string]int) string {
-	best, n := "", -1
-	for email, c := range counts {
-		if c > n {
-			best, n = email, c
-		}
-	}
-	return best
-}
-
-// AuthorChanged returns the set of emails that have committed but are
-// different from the current maintainer, i.e. who held the repo before
-// it (apparently) moved hands.
+// AuthorChanged returns the set of committer emails other than the current
+// maintainer, i.e. who held the repo before it (apparently) moved hands.
 func (p *Provenance) AuthorChanged() []string {
 	var diff []string
 	for email := range p.Committers {
