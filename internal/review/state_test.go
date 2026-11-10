@@ -1,11 +1,17 @@
 package review
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestStoreRoundTrip(t *testing.T) {
@@ -118,6 +124,10 @@ func TestScriptletHashIsOrderIndependent(t *testing.T) {
 	if a != b {
 		t.Fatal("hash depends on map order")
 	}
+	want := Hash([]byte("a.install\x00a\x00b.install\x00b\x00"))
+	if a != want {
+		t.Errorf("scriptlet hash = %q, want golden %q", a, want)
+	}
 }
 
 func TestScriptletHashEmpty(t *testing.T) {
@@ -211,8 +221,12 @@ func TestFingerprintMultipleScriptlets(t *testing.T) {
 }
 
 func TestFingerprintMissingPkgbuild(t *testing.T) {
-	if _, _, _, err := Fingerprint(t.TempDir()); err == nil {
+	_, _, _, err := Fingerprint(t.TempDir())
+	if err == nil {
 		t.Fatal("expected error for missing PKGBUILD")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("expected fs.ErrNotExist, got %v", err)
 	}
 }
 
@@ -224,8 +238,12 @@ func TestFingerprintUnreadableSrcinfo(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, ".SRCINFO"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := Fingerprint(dir); err == nil {
+	_, _, _, err := Fingerprint(dir)
+	if err == nil {
 		t.Fatal("expected error when .SRCINFO is a directory")
+	}
+	if !strings.Contains(err.Error(), ".SRCINFO") {
+		t.Errorf("expected error to mention .SRCINFO, got %v", err)
 	}
 }
 
@@ -237,8 +255,92 @@ func TestFingerprintScriptletIsDirectory(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "x.install"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := Fingerprint(dir); err == nil {
+	_, _, _, err := Fingerprint(dir)
+	if err == nil {
 		t.Fatal("expected error when a *.install match is a directory")
+	}
+	if !strings.Contains(err.Error(), "x.install") {
+		t.Errorf("expected error to mention x.install, got %v", err)
+	}
+}
+
+func TestReadRegularFileRejectsFIFO(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("syscall.Mkfifo is Linux-only here")
+	}
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Skipf("cannot create FIFO: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := readRegularFile(path)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error for FIFO")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readRegularFile blocked on FIFO")
+	}
+}
+
+func TestReadRegularFileRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegularFile(link); err == nil {
+		t.Fatal("expected error for symlink")
+	}
+}
+
+func TestFingerprintScriptletIsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "PKGBUILD"), []byte("pkgname=x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "real")
+	if err := os.WriteFile(target, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "x.install")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := Fingerprint(dir)
+	if err == nil {
+		t.Fatal("expected error when a *.install match is a symlink")
+	}
+	if !strings.Contains(err.Error(), "x.install") {
+		t.Errorf("expected error to mention x.install, got %v", err)
+	}
+}
+
+func TestFingerprintDirectoryWithGlobMetacharacters(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pkg[1]")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "PKGBUILD"), []byte("pkgname=x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.install"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, i, err := Fingerprint(dir)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	want := ScriptletHash(map[string]string{"a.install": "a"})
+	if i != want {
+		t.Errorf("scriptlet hash = %q, want %q", i, want)
 	}
 }
 
@@ -266,7 +368,7 @@ func TestPutIsAtomic(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.HasSuffix(d.Name(), ".tmp") {
+		if strings.Contains(d.Name(), ".tmp") {
 			t.Errorf("temp file left behind: %s", path)
 		}
 		return nil
@@ -282,6 +384,47 @@ func TestPutIsAtomic(t *testing.T) {
 		}
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Errorf("file mode = %04o, want 0600", perm)
+		}
+	}
+}
+
+func TestPutConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- store.Put(&Record{PackageBase: "pkg", Verdict: fmt.Sprintf("v%d", i)})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent put: %v", err)
+		}
+	}
+	got, err := store.Get("pkg")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected record after concurrent puts")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("temp file left behind: %s", e.Name())
 		}
 	}
 }

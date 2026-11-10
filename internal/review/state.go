@@ -8,10 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -68,14 +71,18 @@ func (s *Store) Put(rec *Record) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(s.dir, "."+rec.PackageBase+".tmp")
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(s.dir, "."+filepath.Base(rec.PackageBase)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	cleanup := func() {
 		_ = f.Close()
 		_ = os.Remove(tmp)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		cleanup()
+		return err
 	}
 	if _, err := f.Write(data); err != nil {
 		cleanup()
@@ -132,35 +139,55 @@ func ScriptletHash(scriptlets map[string]string) string {
 
 // Fingerprint hashes the PKGBUILD, .SRCINFO, and any *.install
 // scriptlets in dir. A missing .SRCINFO or absent scriptlets yield empty
-// hashes; only a missing or unreadable PKGBUILD is an error.
+// hashes; a missing or unreadable PKGBUILD is an error. Every input must
+// be a regular file; symlinks, FIFOs, and directories are rejected
+// rather than read.
 func Fingerprint(dir string) (pkgbuildHash, srcinfoHash, scriptletHash string, err error) {
-	pkgbuild, err := os.ReadFile(filepath.Join(dir, "PKGBUILD"))
+	pkgbuild, err := readRegularFile(filepath.Join(dir, "PKGBUILD"))
 	if err != nil {
 		return "", "", "", fmt.Errorf("read PKGBUILD: %w", err)
 	}
 	pkgbuildHash = Hash(pkgbuild)
 
-	srcinfo, err := os.ReadFile(filepath.Join(dir, ".SRCINFO"))
-	if err != nil && !os.IsNotExist(err) {
+	srcinfo, err := readRegularFile(filepath.Join(dir, ".SRCINFO"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", "", "", fmt.Errorf("read .SRCINFO: %w", err)
 	}
 	if err == nil {
 		srcinfoHash = Hash(srcinfo)
 	}
 
-	matches, err := filepath.Glob(filepath.Join(dir, "*.install"))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", "", "", fmt.Errorf("glob scriptlets: %w", err)
+		return "", "", "", fmt.Errorf("read dir: %w", err)
 	}
-	scriptlets := make(map[string]string, len(matches))
-	for _, path := range matches {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", "", "", fmt.Errorf("read scriptlet %s: %w", filepath.Base(path), err)
+	scriptlets := make(map[string]string)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".install") {
+			continue
 		}
-		scriptlets[filepath.Base(path)] = string(data)
+		data, err := readRegularFile(filepath.Join(dir, name))
+		if err != nil {
+			return "", "", "", fmt.Errorf("read scriptlet %s: %w", name, err)
+		}
+		scriptlets[name] = string(data)
 	}
 	return pkgbuildHash, srcinfoHash, ScriptletHash(scriptlets), nil
+}
+
+// readRegularFile reads path only if it is a regular file. It rejects
+// symlinks, FIFOs, devices, and directories before opening them so a
+// hostile checkout cannot block or exhaust memory.
+func readRegularFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	return os.ReadFile(path)
 }
 
 // Hash returns the sha256 hex digest of a byte slice.
