@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/j0yb0y-m/piq/internal/aur"
-	"github.com/j0yb0y-m/piq/internal/config"
 	"github.com/j0yb0y-m/piq/internal/history"
 	"github.com/j0yb0y-m/piq/internal/pkgbuild"
 	"github.com/j0yb0y-m/piq/internal/review"
@@ -15,9 +14,6 @@ import (
 	"github.com/j0yb0y-m/piq/internal/ui"
 	"mvdan.cc/sh/v3/syntax"
 )
-
-// cfg is set once by the root command's PersistentPreRunE.
-var cfg *config.Config
 
 // scanResult bundles the scanner context plus its scoring verdict,
 // provenance history, and any prior review record.

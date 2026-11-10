@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/j0yb0y-m/piq/internal/aur"
-	"github.com/j0yb0y-m/piq/internal/config"
 	"github.com/j0yb0y-m/piq/internal/inspect"
 	"github.com/j0yb0y-m/piq/internal/review"
 	"github.com/j0yb0y-m/piq/internal/sandbox"
@@ -21,50 +20,15 @@ import (
 	"github.com/j0yb0y-m/piq/internal/ui"
 )
 
-// reviewStore is the global review state store, initialized in root.
-var reviewStore *review.Store
-
 func main() {
-	var configPath string
-	var jsonOut bool
-
-	root := &cobra.Command{
-		Use:   "piq",
-		Short: "piq — a security-first AUR helper",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			var err error
-			cfg, err = config.Load(configPath)
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-			cache, err := cacheDir()
-			if err != nil {
-				return err
-			}
-			reviewStore, err = review.NewStore(filepath.Join(cache, "reviews"))
-			if err != nil {
-				return fmt.Errorf("init review store: %w", err)
-			}
-			return nil
-		},
-	}
-
-	root.PersistentFlags().StringVar(&configPath, "config", "", "path to piq.toml (default: ~/.config/piq/piq.toml)")
-	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "output in JSON format")
-
-	root.AddCommand(searchCmd(), scanCmd(jsonOut), installCmd(jsonOut), systemCmd(), hooksCmd())
-
-	if err := root.Execute(); err != nil {
-		ui.Errorf("%v\n", err)
-		os.Exit(1)
-	}
+	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func searchCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "search <term>",
 		Short: "Search the AUR",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			results, err := aur.NewClient().Search(args[0])
 			if err != nil {
@@ -96,17 +60,17 @@ func confirm(prompt string) bool {
 	return strings.TrimSpace(strings.ToLower(line)) == "y"
 }
 
-func scanCmd(jsonOut bool) *cobra.Command {
+func scanCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "scan <package>",
 		Short: "Security-scan a package without installing it",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			res, err := scanPackage(args[0], reviewStore)
 			if err != nil {
 				return err
 			}
-			if jsonOut {
+			if jsonOutput {
 				return printJSON(res)
 			}
 			printFindings(res)
@@ -149,11 +113,11 @@ func printJSON(res *scanResult) error {
 	return enc.Encode(out)
 }
 
-func installCmd(jsonOut bool) *cobra.Command {
+func installCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "install <package>",
 		Short: "Scan, review, build, and install a package",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			res, err := scanPackage(name, reviewStore)
@@ -173,7 +137,7 @@ func installCmd(jsonOut bool) *cobra.Command {
 				showDiff(res)
 			}
 
-			if jsonOut {
+			if jsonOutput {
 				return printJSON(res)
 			}
 			printFindings(res)
