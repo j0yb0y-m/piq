@@ -1,0 +1,33 @@
+# Maintainer: piq maintainers
+pkgname=piq
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A security-first AUR helper with a sandboxed build pipeline"
+arch=('x86_64' 'aarch64')
+url="https://github.com/j0yb0y-m/piq"
+license=('MIT')
+depends=('bubblewrap')
+makedepends=('go' 'git')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/j0yb0y-m/piq/archive/v$pkgver.tar.gz")
+# Replace this placeholder with the sha256 from the release checksums.txt.
+# It is deliberately not SKIP so an unverified tarball cannot build by accident.
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CGO_ENABLED=0
+  go build -trimpath \
+    -ldflags "-s -w -X main.version=$pkgver -X main.commit=release -X main.date=unknown" \
+    -o piq ./cmd/piq
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  go test ./...
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 piq "$pkgdir/usr/bin/piq"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

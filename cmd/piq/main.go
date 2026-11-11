@@ -161,7 +161,7 @@ func installCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&yes, "yes", false, "do not prompt for unchanged, clean packages")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the plan without building or installing")
 	cmd.Flags().BoolVar(&allowNet, "allow-net", false, "allow the build phase to use the network")
-	cmd.Flags().BoolVar(&noSandbox, "no-sandbox", false, "build without bubblewrap (unsafe)")
+	cmd.Flags().BoolVar(&noSandbox, "no-sandbox", false, "permit an unsandboxed build if bubblewrap is unavailable")
 	cmd.Flags().BoolVar(&force, "force", false, "install despite blocking findings after extra confirmation")
 	return cmd
 }

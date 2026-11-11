@@ -1,136 +1,240 @@
 # piq
 
-A security-first AUR helper written in Go. Scans every package before it reaches your system, scores the risk, and blocks the worst offenders automatically.
+A security-first AUR helper for Arch Linux. piq fetches a package, scans its
+PKGBUILD and scriptlets, fetches and scans upstream sources, builds in a
+bubblewrap sandbox, inspects the built package, asks for consent, and only
+then installs it with pacman.
 
-## Why piq
+piq is deliberately small. It does not resolve AUR providers or conflicts, run
+a full system upgrade, maintain a chroot, or provide a TUI. It is a review and
+containment layer around the package manager you already have.
 
-The AUR is the single biggest attack surface on an Arch Linux system. Real supply-chain attacks have shipped through it:
+## Requirements
 
-- **CHAOS RAT** (2025): a hidden install hook exfiltrated SSH keys and crypto wallets to an attacker's C2 server.
-- **Atomic Arch campaign** (June 2026): dozens of empty packages with `npm install atomic-lockfile` / `bun install js-digest` as a trusted-looking download chain.
-- **xsnow worm** (June 2026): a malicious `.install` scriptlet injected persistence via systemd and cron.
-- **xz-utils backdoor** (2024): a multi-year social-engineering attack that compromised a critical system library.
+- Arch Linux (or an Arch-derived system) with `pacman`
+- `bubblewrap` for sandboxed builds
+- A non-root user: piq refuses to run `makepkg` as root
+- Go 1.27 or newer to build from source
+- Unprivileged user namespaces enabled (bubblewrap needs them)
 
-Standard AUR helpers (yay, paru) install whatever you ask for. piq sits between you and the AUR, scans everything, and tells you what's safe.
-
-## Features
-
-- **15 security rules** covering reverse shells, credential theft, data exfiltration, obfuscation, persistence, destructive commands, known campaigns, and more.
-- **Scoring and verdicts** — every scan produces a risk score (0-100+) and a verdict: TRUSTED, OK, SKETCHY, SUSPICIOUS, or MALICIOUS.
-- **Gate hits** — unambiguous indicators of malice (pipe-to-shell, known IOCs, reverse shells, destructive commands) force a MALICIOUS verdict and block installation.
-- **`.install` scriptlet scanning** — companion scriptlets are scanned alongside the PKGBUILD, including phase-function validation.
-- **Git provenance** — detects maintainer changes, author drift, and recent commits that signal a takeover.
-- **Update-diff** — on reinstall, shows exactly what changed since your last review and flags newly-introduced dangers.
-- **Configurable via TOML** — `~/.config/piq/piq.toml` with environment variable overrides.
-- **JSON output** for scripting and CI integration.
-- **`piq system`** audits all installed AUR packages in one pass.
-- **Bubblewrap sandbox** — builds run in an isolated namespace with no network (except source fetch) and no write access outside the build dirs.
+If `bwrap` is missing, `install` fails instead of silently building without a
+sandbox. Only an explicit `--no-sandbox` or `sandbox.enabled = false` permits
+an unsandboxed build, and only when `bwrap` is unavailable; both options still
+use bubblewrap when it is installed.
 
 ## Install
+
+From source:
 
 ```bash
 git clone https://github.com/j0yb0y-m/piq.git
 cd piq
-go build -o piq ./cmd/piq
-sudo cp piq /usr/local/bin/
+make build
+sudo install -Dm755 bin/piq /usr/bin/piq
 ```
 
-## Usage
+With the bundled PKGBUILD (update `sha256sums` from the release's
+`checksums.txt` first):
 
 ```bash
-# Scan a package
-piq scan <package>
-
-# Scan with JSON output
-piq scan --json <package>
-
-# Install a package (scan, review, build, install)
-piq install <package>
-
-# Audit all installed AUR packages
-piq system
-
-# Search the AUR
-piq search <term>
+cd packaging
+makepkg -si
 ```
 
-## How it works
+Shell completion:
 
-1. **Fetch** — clones the package's git repo from the AUR.
-2. **Parse** — reads the PKGBUILD, `.SRCINFO`, and any `.install` scriptlets.
-3. **Scan** — runs 15 security rules against the AST and metadata, including the scriptlets.
-4. **Score** — aggregates risk points per rule, applies gate checks, and produces a verdict.
-5. **Provenance** — inspects git history for maintainer changes and author drift.
-6. **Report** — displays findings by severity with rule IDs and line numbers.
-7. **Build** — fetches sources in a sandboxed network namespace, then builds without network.
-8. **Inspect** — checks the built package for suspicious entries (setuid, setgid, world-writable).
-9. **Install** — installs via `pacman -U` with a configurable sudo command.
+```bash
+piq completion bash | sudo tee /usr/share/bash-completion/completions/piq >/dev/null
+piq completion zsh  > ~/.zfunc/_piq
+piq completion fish > ~/.config/fish/completions/piq.fish
+```
+
+## Quick start
+
+```bash
+# Inspect a package without installing it.
+piq scan paru
+
+# Fetch and scan upstream sources too.
+piq scan --deep paru
+
+# Scan, build in a sandbox, inspect, and install.
+piq install paru
+
+# Show the plan without building or installing.
+piq install --dry-run paru
+
+# Audit installed foreign (AUR) packages.
+piq audit
+
+# Scan every foreign package's PKGBUILD and verify file integrity.
+piq audit --deep --integrity
+
+# Metadata, review status, and AUR search.
+piq info paru
+piq search "aur helper"
+
+# Show the effective configuration and build metadata.
+piq config
+piq version
+```
+
+## What `install` does
+
+1. **Fetch** the package's git repository from the AUR and record its history.
+2. **Scan** the PKGBUILD, `.SRCINFO`, and every local `.install` scriptlet.
+3. **Fetch sources** in the sandbox (network allowed, no build yet) and scan
+   the extracted source tree.
+4. **Resolve AUR dependencies** leaf-first (depth 10, cycle-safe) and scan each
+   one the same way. Only missing official-repository dependencies are installed
+   with `pacman -S --asdeps`; AUR names are never passed to `pacman -S`.
+5. **Build** each package with `makepkg` inside bubblewrap. The build phase has
+   no network unless `--allow-net` is passed.
+6. **Inspect** every built artifact for setuid/setgid bits, world-writable
+   files, system config paths, escaping symlinks, device nodes, and path
+   traversal.
+7. **Ask for consent.** A blocked package requires `--force` plus two
+   confirmations. Suspicious artifacts require a confirmation unless `--yes`.
+8. **Install** with `pacman -U`, then save the review record. A failed or
+   aborted install never records a successful review.
+
+`--yes` is not a blanket approval. It only skips the prompt for an unchanged
+package whose saved review still matches the current PKGBUILD, `.SRCINFO`, and
+scriptlets, and whose findings do not require confirmation.
+
+## What piq does not do
+
+- It does not run `-Syu`, upgrade the system, or manage repositories.
+- It does not resolve virtual providers or package conflicts.
+- It does not use a chroot; the sandbox is bubblewrap only.
+- It does not intercept `yay`, `paru`, `pacman -U`, or direct `makepkg` use.
+- It does not provide a pacman hook. Hooks run as root and cannot read
+  per-user review records safely.
+- It does not prove a package is safe. Static analysis is a filter, not a
+  proof; see [the threat model](docs/threat-model.md).
+
+## Review records
+
+After a successful install, piq stores a review under
+`<cache_dir>/reviews/<pkgbase>.json` with the HEAD commit, PKGBUILD,
+`.SRCINFO`, and scriptlet fingerprints. The next install compares those
+fingerprints and prompts again if anything changed.
+
+Review records are local to the invoking user. They are not a system-wide
+attestation database.
 
 ## Configuration
 
-Create `~/.config/piq/piq.toml`:
+piq reads `~/.config/piq/piq.toml`. A missing file is fine; defaults apply.
 
 ```toml
-severity = "warning"    # minimum severity to show: info, warning, critical
-threshold = 80          # minimum risk score to block on
-cache_dir = "/home/user/.cache/piq"
+severity  = "warning"   # info | warning | critical
+threshold = 80          # 0-1000; 0 disables score-based blocking
+cache_dir = ""          # empty -> ~/.cache/piq
 
 [rules]
-ignore = ["typosquat"]  # silence specific rules by ID
+ignore = ["reputation"] # rule IDs, or "*" for everything
 
 [sandbox]
-enabled = true          # false to disable bubblewrap (not recommended)
+enabled = true          # absent -> auto-detect bwrap
 
 [pacman]
-sudo_cmd = "sudo"       # or "doas", "sudo -A", etc.
+sudo_cmd = "sudo"       # fields are split: "doas", "sudo -A"
 ```
 
-Environment variable overrides (take precedence over the TOML file):
+Environment overrides: `PIQ_SEVERITY`, `PIQ_THRESHOLD`, `PIQ_CACHE_DIR`,
+`PIQ_SUDO_CMD`, `PIQ_RULES_IGNORE`.
 
-| Variable | Description |
+See [docs/configuration.md](docs/configuration.md) for every key and its
+validation rules. The old `network` and `hooks` sections were removed and are
+ignored.
+
+## Exit codes
+
+| Code | Meaning |
 |---|---|
-| `PIQ_SEVERITY` | Minimum severity to show |
-| `PIQ_THRESHOLD` | Risk score threshold |
-| `PIQ_CACHE_DIR` | Package cache directory |
-| `PIQ_SUDO_CMD` | Sudo command for pacman |
-| `PIQ_RULES_IGNORE` | Comma-separated rule IDs to ignore |
+| 0 | Success, including a deliberate abort |
+| 1 | Runtime error (network, parse, build, pacman) |
+| 2 | Usage error |
+| 3 | Blocked by verdict or score (`scan`, `install`) |
+
+## JSON output
+
+Every report command (`scan`, `install`, `search`, `audit`, `info`, `config`,
+`version`) emits one JSON object with `schema_version: 1` and a `command`
+field. Progress and prompts go to stderr, so stdout stays pure JSON. ANSI color
+is disabled for JSON, pipes, and `NO_COLOR`. `completion` emits a shell script,
+not JSON.
+
+```bash
+piq scan --json paru | jq '.verdict, .score'
+piq audit --json | jq '.packages[] | select(.review_status == "unreviewed") | .package'
+```
+
+See [docs/json-schema.md](docs/json-schema.md) and
+[`schema/report-v1.json`](schema/report-v1.json).
 
 ## Rules
 
-| Rule | Severity | Gate | Description |
+24 rules are registered. Six are gates: any gate finding forces a MALICIOUS
+verdict and blocks installation regardless of the score.
+
+| Rule | Severity | Gate | Catches |
 |---|---|---|---|
-| `pipe-to-shell` | CRITICAL | yes | Downloads content and pipes directly into a shell |
-| `known-campaign` | CRITICAL | yes | References a known AUR supply-chain campaign |
-| `reverse-shell` | CRITICAL | yes | Opens a reverse shell or calls netcat/socat |
-| `destructive` | CRITICAL | yes | Runs rm/mkfs/dd against system directories |
-| `credential-theft` | CRITICAL | yes | Reads SSH keys, cloud credentials, wallets, cookies |
-| `data-exfiltration` | CRITICAL | yes | Pipes local files to curl/wget/nc |
-| `privilege-escalation` | CRITICAL | no | Calls sudo/su/pkexec from a PKGBUILD function |
-| `suspicious-write-path` | CRITICAL | no | Writes to systemd units, cron, shell rc files |
-| `obfuscation` | CRITICAL | no | Base64/hex decode into shell, xxd patterns |
-| `skipped-checksum` | WARNING | no | SHA256 set to SKIP on non-VCS source |
-| `insecure-source-url` | WARNING | no | Source over HTTP or pointing at paste sites |
-| `srcinfo-divergence` | CRITICAL | no | PKGBUILD source differs from .SRCINFO |
-| `eval-usage` | WARNING | no | Uses eval on a dynamic string |
-| `typosquat` | WARNING | no | Name is close to a popular package |
-| `reputation` | WARNING | no | Brand-new package with no votes |
-| `checksum-completeness` | WARNING | no | No checksum or only weak algorithm (MD5/SHA1) |
-| `maintainer-change` | WARNING | no | Git history shows different committers |
-| `maintainer-drift` | WARNING | no | Current maintainer authored few commits |
+| `pipe-to-shell` | CRITICAL | yes | Downloads content and pipes it into a shell |
+| `data-exfiltration` | CRITICAL | yes | Pipes local files or secrets to the network |
+| `destructive` | CRITICAL | yes | Destructive commands against system paths |
+| `known-campaign` | CRITICAL | yes | Indicators from known AUR supply-chain campaigns |
+| `reverse-shell` | CRITICAL | yes | Reverse shells, netcat/socat callbacks |
+| `obfuscation` | CRITICAL | yes | Decode-and-execute payloads |
+| `credential-theft` | CRITICAL | no | Reads SSH/GPG keys, cloud credentials, wallets, cookies |
+| `privilege-escalation` | CRITICAL | no | `sudo`/`su`/`pkexec` from package functions |
+| `suspicious-write-path` | CRITICAL | no | Writes to systemd, cron, sudoers, pacman hooks, shell rc files |
+| `srcinfo-divergence` | CRITICAL | no | PKGBUILD differs from `.SRCINFO` |
+| `missing-scriptlet` | CRITICAL | no | `install=` names a scriptlet that is not present |
+| `insecure-source-url` | WARNING/CRITICAL | no | Plain HTTP sources; paste sites, shorteners, bare IPs |
+| `checksum-completeness` | WARNING | no | Missing checksums, `SKIP` on non-VCS sources, weak hashes |
+| `credential-reference` | WARNING | no | Reads credential-looking paths without clear exfiltration |
+| `eval-usage` | WARNING | no | Dynamic `eval` |
+| `obfuscation-hex` | WARNING | no | Hex payload patterns |
+| `undeclared-fetch` | WARNING | no | Downloads in the build phase without a declared source |
+| `maintainer-change` | WARNING | no | Recent committer handover |
+| `maintainer-drift` | WARNING | no | Current maintainer authored little of the history |
+| `scriptlet-no-functions` | WARNING | no | Non-empty `.install` without install-phase functions |
+| `split-package-missing` | WARNING | no | Split package entry without its `package_*` function |
+| `typosquat` | WARNING | no | Name close to a popular package |
+| `reputation` | WARNING/INFO | no | Very new, low-trust package; out-of-date flag |
 | `recent-commits` | INFO | no | Very recent commit on a small package |
-| `split-package-missing` | WARNING | no | Split pkgname entry missing its package function |
 
-## Risk scoring
+## Verdicts and scoring
 
-Each firing rule contributes points toward a cumulative risk score. Gates override the score entirely.
+Findings contribute points per rule. A gate hit overrides the score.
 
-| Verdict | Score range | Meaning |
+| Verdict | Score | Meaning |
 |---|---|---|
-| TRUSTED | 0 | No findings, checksums present |
-| OK | 1-39 | Only INFO-level noise |
-| SKETCHY | 40-79 | One or more warnings |
-| SUSPICIOUS | 80-99 | Serious concerns |
-| MALICIOUS | 100+ or gate hit | Unambiguous indicator of malice |
+| TRUSTED | 0 | No findings |
+| OK | 1-39 | Informational noise only |
+| SKETCHY | 40-79 | Warnings worth reading |
+| SUSPICIOUS | 80+ | Serious concerns |
+| MALICIOUS | any gate hit | Unambiguous indicator of malice |
+
+Installation is blocked when a gate fires or the score reaches `threshold`
+(default 80). A blocked install needs `--force` and two separate confirmations.
+
+## Development
+
+```bash
+make build             # bin/piq
+make test              # go test ./...
+make test-race         # go test -race ./...
+make lint              # gofmt -l + go vet
+make integration       # archlinux:latest under podman (privileged, non-root)
+make release-snapshot  # goreleaser snapshot
+```
+
+See [docs/threat-model.md](docs/threat-model.md) before relying on piq as a
+security boundary.
 
 ## License
+
 [MIT](LICENSE)

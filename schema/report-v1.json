@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/j0yb0y-m/piq/schema/report-v1.json",
+  "title": "piq JSON report",
+  "description": "The stable JSON output of piq report commands. Each invocation of scan, install, search, audit, info, config, or version emits exactly one object on stdout with schema_version 1.",
+  "oneOf": [
+    { "$ref": "#/$defs/scan" },
+    { "$ref": "#/$defs/search" },
+    { "$ref": "#/$defs/audit" },
+    { "$ref": "#/$defs/info" },
+    { "$ref": "#/$defs/config" },
+    { "$ref": "#/$defs/version" }
+  ],
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "severity", "file", "line", "message"],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "Machine-readable rule ID, for example pipe-to-shell."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["INFO", "WARNING", "CRITICAL"]
+        },
+        "file": {
+          "type": "string",
+          "description": "File the finding came from, or an empty string when it is package-level."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_count", "maintainer", "head_committer", "head_committed_at"],
+      "properties": {
+        "commit_count": { "type": "integer", "minimum": 0 },
+        "maintainer": { "type": "string" },
+        "head_committer": { "type": "string" },
+        "head_committed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command",
+        "package",
+        "verdict",
+        "block_reason",
+        "score",
+        "blocked",
+        "findings",
+        "generated_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "type": "string", "enum": ["scan", "install"] },
+        "package": { "type": "string" },
+        "verdict": {
+          "type": "string",
+          "enum": ["TRUSTED", "OK", "SKETCHY", "SUSPICIOUS", "MALICIOUS", "UNKNOWN"]
+        },
+        "block_reason": { "type": "string" },
+        "score": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "boolean" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "generated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "package_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "description", "votes"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "description": { "type": "string" },
+        "votes": { "type": "integer" }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "command", "results"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "search" },
+        "results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/package_summary" }
+        }
+      }
+    },
+    "audit_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package",
+        "installed_version",
+        "aur_version",
+        "outdated",
+        "review_status"
+      ],
+      "properties": {
+        "package": { "type": "string" },
+        "installed_version": { "type": "string" },
+        "aur_version": {
+          "type": "string",
+          "description": "Empty when the installed package is no longer present in the AUR."
+        },
+        "outdated": { "type": "boolean" },
+        "review_status": {
+          "type": "string",
+          "enum": ["reviewed", "unreviewed", "changed"]
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["TRUSTED", "OK", "SKETCHY", "SUSPICIOUS", "MALICIOUS", "UNKNOWN"]
+        },
+        "score": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "boolean" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "integrity": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "error": { "type": "string" }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "command", "packages"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "audit" },
+        "packages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/audit_entry" }
+        }
+      }
+    },
+    "info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command",
+        "name",
+        "version",
+        "votes",
+        "popularity",
+        "maintainer",
+        "url",
+        "review_status"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "info" },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "votes": { "type": "integer" },
+        "popularity": { "type": "number" },
+        "maintainer": {
+          "type": "string",
+          "description": "Empty when the package is orphaned."
+        },
+        "submitted": { "type": "string", "format": "date-time" },
+        "url": { "type": "string" },
+        "review_status": {
+          "type": "string",
+          "enum": ["reviewed", "unreviewed"]
+        },
+        "reviewed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command",
+        "config_path",
+        "cache_path",
+        "severity",
+        "threshold",
+        "ignore",
+        "sandbox_enabled",
+        "sudo_cmd"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "config" },
+        "config_path": { "type": "string" },
+        "cache_path": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "critical"]
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "ignore": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "sandbox_enabled": {
+          "type": ["boolean", "null"],
+          "description": "Null means auto-detect bubblewrap."
+        },
+        "sudo_cmd": { "type": "string" }
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "command", "version", "commit", "date"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "version" },
+        "version": { "type": "string" },
+        "commit": { "type": "string" },
+        "date": { "type": "string" }
+      }
+    }
+  }
+}

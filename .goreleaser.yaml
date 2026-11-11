@@ -1,0 +1,66 @@
+version: 2
+
+project_name: piq
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: piq
+    main: ./cmd/piq
+    binary: piq
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .CommitDate }}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - docs/*
+
+checksum:
+  name_template: checksums.txt
+
+nfpms:
+  - id: packages
+    package_name: piq
+    vendor: piq
+    homepage: https://github.com/j0yb0y-m/piq
+    maintainer: piq maintainers
+    description: A security-first AUR helper with a sandboxed build pipeline.
+    license: MIT
+    formats:
+      - archlinux
+    dependencies:
+      - bubblewrap
+    bindir: /usr/bin
+    contents:
+      - src: LICENSE
+        dst: /usr/share/licenses/piq/LICENSE
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
