@@ -160,6 +160,30 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestSandboxExplicitlyDisabled(t *testing.T) {
+	cfg := &Config{}
+	if cfg.SandboxExplicitlyDisabled() {
+		t.Error("nil sandbox setting must not count as explicitly disabled")
+	}
+
+	enabled := true
+	cfg = &Config{Sandbox: Sandbox{Enabled: &enabled}}
+	if cfg.SandboxExplicitlyDisabled() {
+		t.Error("explicitly enabled sandbox reported as disabled")
+	}
+
+	disabled := false
+	cfg = &Config{Sandbox: Sandbox{Enabled: &disabled}}
+	if !cfg.SandboxExplicitlyDisabled() {
+		t.Error("explicitly disabled sandbox not reported")
+	}
+
+	var nilConfig *Config
+	if nilConfig.SandboxExplicitlyDisabled() {
+		t.Error("nil config must not count as explicitly disabled")
+	}
+}
+
 func TestSandboxEnabled(t *testing.T) {
 	// With explicit true
 	b := true

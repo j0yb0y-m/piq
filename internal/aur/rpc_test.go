@@ -37,6 +37,27 @@ func TestInfoSendsUserAgent(t *testing.T) {
 	}
 }
 
+func TestInfoParsesDependencyFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"type":"multiinfo","resultcount":1,"results":[{"Name":"x","Depends":["go>=1.22"],"MakeDepends":["git"],"CheckDepends":["bats"]}]}`)
+	}))
+	defer srv.Close()
+
+	pkgs, err := testClient(srv.URL).Info("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("got %d packages", len(pkgs))
+	}
+	p := pkgs[0]
+	if len(p.Depends) != 1 || p.Depends[0] != "go>=1.22" ||
+		len(p.MakeDepends) != 1 || p.MakeDepends[0] != "git" ||
+		len(p.CheckDepends) != 1 || p.CheckDepends[0] != "bats" {
+		t.Fatalf("dependencies not decoded: %+v", p)
+	}
+}
+
 func TestInfoBatches(t *testing.T) {
 	var requests, args atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

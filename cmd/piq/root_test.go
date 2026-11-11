@@ -73,6 +73,30 @@ func TestReadJSONFlagFromRootPersistentFlag(t *testing.T) {
 	}
 }
 
+// TestCommandsExposePipelineFlags guards the user-facing surface of the
+// scan and install pipeline: every flag must stay wired to a flag variable.
+func TestCommandsExposePipelineFlags(t *testing.T) {
+	root := newRootCmd()
+	tests := []struct {
+		command string
+		flags   []string
+	}{
+		{"scan", []string{"deep"}},
+		{"install", []string{"yes", "dry-run", "allow-net", "no-sandbox", "force"}},
+	}
+	for _, tc := range tests {
+		cmd, _, err := root.Find([]string{tc.command})
+		if err != nil {
+			t.Fatalf("find %s: %v", tc.command, err)
+		}
+		for _, name := range tc.flags {
+			if cmd.Flags().Lookup(name) == nil {
+				t.Errorf("%s missing flag --%s", tc.command, name)
+			}
+		}
+	}
+}
+
 // TestNewRootCmdSetsJSONOutput verifies the root's PersistentPreRunE
 // publishes the parsed --json value in the package global handlers read.
 func TestNewRootCmdSetsJSONOutput(t *testing.T) {

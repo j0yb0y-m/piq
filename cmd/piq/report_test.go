@@ -6,12 +6,13 @@ import (
 
 	"github.com/j0yb0y-m/piq/internal/aur"
 	"github.com/j0yb0y-m/piq/internal/history"
+	"github.com/j0yb0y-m/piq/internal/pipeline"
 	"github.com/j0yb0y-m/piq/internal/report"
 	"github.com/j0yb0y-m/piq/internal/scanner"
 )
 
 func TestScanReportIncludesBlockReason(t *testing.T) {
-	res := &scanResult{Pkgbase: "x", Score: &scanner.Score{Verdict: scanner.Suspicious, Total: 90, Blocked: true, BlockReason: "score 90 >= threshold 80"}}
+	res := &pipeline.Result{Pkgbase: "x", Score: &scanner.Score{Verdict: scanner.Suspicious, Total: 90, Blocked: true, BlockReason: "score 90 >= threshold 80"}}
 	r := scanReport(res)
 	if !r.Blocked || r.BlockReason == "" || r.Package != "x" {
 		t.Fatalf("%+v", r)
@@ -20,7 +21,7 @@ func TestScanReportIncludesBlockReason(t *testing.T) {
 
 func TestScanReportMapsFindingsAndProvenance(t *testing.T) {
 	committed := time.Date(2024, 5, 1, 12, 30, 0, 0, time.UTC)
-	res := &scanResult{
+	res := &pipeline.Result{
 		Pkgbase: "demo",
 		Score: &scanner.Score{
 			Verdict:     scanner.Suspicious,
@@ -105,7 +106,7 @@ func TestSearchReportMapsResultsAndEmptySlice(t *testing.T) {
 }
 
 func TestScanReportNilScore(t *testing.T) {
-	r := scanReport(&scanResult{Pkgbase: "x"})
+	r := scanReport(&pipeline.Result{Pkgbase: "x"})
 	if r.Package != "x" || r.Findings == nil || len(r.Findings) != 0 {
 		t.Fatalf("%+v", r)
 	}
@@ -115,7 +116,7 @@ func TestScanReportNilScore(t *testing.T) {
 }
 
 func TestScanReportForInstallCommand(t *testing.T) {
-	res := &scanResult{Pkgbase: "x", Score: &scanner.Score{Verdict: scanner.Malicious, Total: 100, Blocked: true}}
+	res := &pipeline.Result{Pkgbase: "x", Score: &scanner.Score{Verdict: scanner.Malicious, Total: 100, Blocked: true}}
 	r := scanReportFor(res, "install")
 	if r.Command != "install" {
 		t.Fatalf("command = %q", r.Command)

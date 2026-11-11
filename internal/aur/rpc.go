@@ -62,6 +62,13 @@ type Package struct {
 	FirstSubmitted int64
 	LastModified   int64
 	URLPath        string
+
+	// Dependency metadata returned by AUR RPC v5's info endpoint. piq
+	// uses it to resolve the AUR dependency closure without cloning
+	// every candidate first.
+	Depends      []string
+	MakeDepends  []string
+	CheckDepends []string
 }
 
 type rpcResponse struct {

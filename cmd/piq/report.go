@@ -4,24 +4,28 @@ import (
 	"time"
 
 	"github.com/j0yb0y-m/piq/internal/aur"
+	"github.com/j0yb0y-m/piq/internal/pipeline"
 	"github.com/j0yb0y-m/piq/internal/report"
 )
 
 // scanReport builds the JSON report for the scan command.
-func scanReport(res *scanResult) report.Scan {
+func scanReport(res *pipeline.Result) report.Scan {
 	return scanReportFor(res, "scan")
 }
 
 // scanReportFor builds the JSON report for a command that scans a package.
 // Commands keep their own identity while sharing the same shape.
-func scanReportFor(res *scanResult, command string) report.Scan {
+func scanReportFor(res *pipeline.Result, command string) report.Scan {
 	r := report.Scan{
 		SchemaVersion: report.SchemaVersion,
 		Command:       command,
-		Package:       res.Pkgbase,
 		Findings:      []report.Finding{},
 		GeneratedAt:   time.Now().UTC(),
 	}
+	if res == nil {
+		return r
+	}
+	r.Package = res.Pkgbase
 	if res.Score != nil {
 		r.Verdict = res.Score.Verdict.String()
 		r.Score = res.Score.Total

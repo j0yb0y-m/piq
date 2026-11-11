@@ -11,6 +11,7 @@ import (
 
 	"github.com/j0yb0y-m/piq/internal/alpm"
 	"github.com/j0yb0y-m/piq/internal/aur"
+	"github.com/j0yb0y-m/piq/internal/pipeline"
 	"github.com/j0yb0y-m/piq/internal/report"
 	"github.com/j0yb0y-m/piq/internal/ui"
 )
@@ -69,7 +70,13 @@ func systemCmd() *cobra.Command {
 					}
 				}
 
-				res, err := scanPackage(pkgname, reviewStore)
+				res, err := pipeline.New(pipeline.Options{
+					CacheDir: cache,
+					Config:   cfg,
+					Store:    reviewStore,
+					Confirm:  confirm,
+					JSON:     jsonOutput,
+				}).Scan(cmd.Context(), pkgname, false)
 				if err != nil {
 					skipPackage(pkgname, err)
 					continue

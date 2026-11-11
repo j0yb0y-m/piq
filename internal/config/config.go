@@ -176,3 +176,11 @@ func (c *Config) SandboxEnabled() bool {
 	_, err := exec.LookPath("bwrap")
 	return err == nil
 }
+
+// SandboxExplicitlyDisabled reports whether the user turned sandboxing
+// off in config. Unlike SandboxEnabled it never auto-detects bwrap: a
+// missing binary with the default setting must not silently authorize
+// an unsandboxed build.
+func (c *Config) SandboxExplicitlyDisabled() bool {
+	return c != nil && c.Sandbox.Enabled != nil && !*c.Sandbox.Enabled
+}

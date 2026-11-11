@@ -2,21 +2,17 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/j0yb0y-m/piq/internal/aur"
-	"github.com/j0yb0y-m/piq/internal/build"
-	"github.com/j0yb0y-m/piq/internal/inspect"
+	"github.com/j0yb0y-m/piq/internal/pipeline"
 	"github.com/j0yb0y-m/piq/internal/report"
-	"github.com/j0yb0y-m/piq/internal/review"
-	"github.com/j0yb0y-m/piq/internal/scanner"
 	"github.com/j0yb0y-m/piq/internal/ui"
 )
 
@@ -66,19 +62,42 @@ func cacheDir() (string, error) {
 }
 
 func confirm(prompt string) bool {
-	ui.Printf("%s [y/N] ", ui.Warning(prompt))
+	if jsonOutput {
+		ui.Errorf("%s [y/N] ", ui.Warning(prompt))
+	} else {
+		ui.Printf("%s [y/N] ", ui.Warning(prompt))
+	}
 	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')
 	return strings.TrimSpace(strings.ToLower(line)) == "y"
 }
 
+func pipelineOptions() (pipeline.Options, error) {
+	cache, err := cacheDir()
+	if err != nil {
+		return pipeline.Options{}, err
+	}
+	return pipeline.Options{
+		CacheDir: cache,
+		Config:   cfg,
+		Store:    reviewStore,
+		Confirm:  confirm,
+		JSON:     jsonOutput,
+	}, nil
+}
+
 func scanCmd() *cobra.Command {
-	return &cobra.Command{
+	var deep bool
+	cmd := &cobra.Command{
 		Use:   "scan <package>",
 		Short: "Security-scan a package without installing it",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := scanPackage(args[0], reviewStore)
+			opts, err := pipelineOptions()
+			if err != nil {
+				return err
+			}
+			res, err := pipeline.New(opts).Scan(cmd.Context(), args[0], deep)
 			if err != nil {
 				return err
 			}
@@ -87,7 +106,7 @@ func scanCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printFindings(res)
+				pipeline.PrintFindings(ui.Out(), res)
 			}
 			if res.Score != nil && res.Score.Blocked {
 				return coded(exitBlocked, fmt.Errorf("blocked: %s", res.Score.BlockReason))
@@ -95,179 +114,54 @@ func scanCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&deep, "deep", false, "fetch and scan upstream sources")
+	return cmd
 }
 
 func installCmd() *cobra.Command {
-	return &cobra.Command{
+	var yes, dryRun, allowNet, noSandbox, force bool
+	cmd := &cobra.Command{
 		Use:   "install <package>",
 		Short: "Scan, review, build, and install a package",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			res, err := scanPackage(name, reviewStore)
+			opts, err := pipelineOptions()
 			if err != nil {
 				return err
 			}
+			opts.Yes = yes
+			opts.DryRun = dryRun
+			opts.AllowNet = allowNet
+			opts.NoSandbox = noSandbox
+			opts.Force = force
 
-			score := res.Score
+			res, err := pipeline.New(opts).Install(cmd.Context(), args[0])
+			switch {
+			case errors.Is(err, pipeline.ErrAborted):
+				if !jsonOutput {
+					ui.Println("Aborted.")
+				}
+				return nil
+			case errors.Is(err, pipeline.ErrBlocked):
+				if jsonOutput && res != nil {
+					if werr := report.Write(ui.Out(), scanReportFor(res, "install")); werr != nil {
+						return werr
+					}
+				}
+				return coded(exitBlocked, err)
+			case err != nil:
+				return err
+			}
 			if jsonOutput {
-				if err := report.Write(ui.Out(), scanReportFor(res, "install")); err != nil {
-					return err
-				}
-				if score != nil && score.Verdict == scanner.Malicious {
-					return coded(exitBlocked, fmt.Errorf("installation blocked: malicious verdict"))
-				}
-				return nil
+				return report.Write(ui.Out(), scanReportFor(res, "install"))
 			}
-
-			if score.Verdict == scanner.Malicious {
-				ui.Printf("%s\n", ui.Critical("BLOCKED: verdict is MALICIOUS — refusing to install."))
-				printFindings(res)
-				return fmt.Errorf("installation blocked: MALICIOUS verdict")
-			}
-
-			// If we have a prior review, show what changed since.
-			if res.Review != nil {
-				showDiff(res)
-			}
-
-			printFindings(res)
-
-			criticalCount := 0
-			for _, f := range score.Findings {
-				if f.Severity == scanner.Critical {
-					criticalCount++
-				}
-			}
-			if criticalCount > 0 {
-				ui.Printf("\n%s\n", ui.Critical(fmt.Sprintf("%d critical finding(s) detected.", criticalCount)))
-			}
-			if len(score.Findings) > 0 && !confirm("Proceed with installation anyway?") {
-				ui.Println("Aborted.")
-				return nil
-			}
-
-			cache := filepath.Dir(res.PkgDir)
-			l, err := build.NewLayout(cache, res.Pkgbase)
-			if err != nil {
-				return err
-			}
-
-			ui.Printf("%s\n", ui.Notice("Phase 1/3: Fetching sources..."))
-			if err := build.Fetch(l, build.Options{AllowNet: true, Stdout: ui.Out(), Stderr: ui.Err()}); err != nil {
-				return fmt.Errorf("fetch phase: %w", err)
-			}
-
-			ui.Printf("%s\n", ui.Notice("Phase 2/3: Building in sandbox (no network)..."))
-			if err := build.Build(l, build.Options{Stdout: ui.Out(), Stderr: ui.Err()}); err != nil {
-				return fmt.Errorf("build phase: %w", err)
-			}
-
-			ui.Printf("%s\n", ui.Notice("Phase 3/3: Inspecting built package..."))
-			entries, err := build.Artifacts(l)
-			if err != nil {
-				return err
-			}
-
-			// Inspect all built packages (split packages support).
-			for _, pkgPath := range entries {
-				fileEntries, err := inspect.Listing(pkgPath)
-				if err != nil {
-					return fmt.Errorf("inspecting %s: %w", pkgPath, err)
-				}
-				suspicious := inspect.SuspiciousEntries(fileEntries)
-				if len(suspicious) > 0 {
-					ui.Printf("\n%s\n", ui.Critical(fmt.Sprintf("Suspicious entries in %s:", filepath.Base(pkgPath))))
-					for _, s := range suspicious {
-						ui.Printf("  - %s\n", s)
-					}
-					if !confirm("Install anyway?") {
-						ui.Println("Aborted.")
-						return nil
-					}
-				}
-			}
-
-			sudoCmd := "sudo"
-			if cfg != nil && cfg.Pacman.SudoCmd != "" {
-				sudoCmd = cfg.Pacman.SudoCmd
-			}
-
-			// Install all built packages in one pacman invocation.
-			pacmanArgs := append([]string{"pacman", "-U", "--noconfirm"}, entries...)
-			pacman := exec.Command(sudoCmd, pacmanArgs...)
-			pacman.Stdout = os.Stdout
-			pacman.Stderr = os.Stderr
-			if err := pacman.Run(); err != nil {
-				return fmt.Errorf("pacman install: %w", err)
-			}
-
-			// Record review state for future update-diff.
-			saveReview(res)
-
-			ui.Printf("%s\n", ui.Success(fmt.Sprintf("%s installed successfully.", name)))
 			return nil
 		},
 	}
-}
-
-// showDiff compares the current PKGBUILD with the last-reviewed
-// snapshot and shows what changed, flagging any newly-introduced
-// dangerous patterns.
-func showDiff(res *scanResult) {
-	if res.Review == nil || res.Review.PkgbuildRaw == "" {
-		return
-	}
-	raw, err := os.ReadFile(filepath.Join(res.PkgDir, "PKGBUILD"))
-	if err != nil {
-		return
-	}
-	newSrc := string(raw)
-	oldSrc := res.Review.PkgbuildRaw
-
-	// Same hash = nothing changed.
-	if res.Review.PkgbuildHash == review.Hash(raw) {
-		return
-	}
-
-	ui.Printf("\n%s\n", ui.Warning("Package has been updated since last review."))
-	ui.Printf("  %s%s\n", ui.Muted("Last reviewed: "), res.Review.ReviewedAt.Format("2006-01-02"))
-	ui.Printf("  %s%s\n", ui.Muted("Previous committer: "), res.Review.Committer)
-
-	unified, newFindings := scanner.PKGBUILDDiff(oldSrc, newSrc)
-	if unified != "" {
-		ui.Printf("\n%s\n", ui.Notice("Diff since last review:"))
-		ui.Println(unified)
-	}
-	// Show any dangerous lines that were ADDED since the last review.
-	if len(newFindings) > 0 {
-		ui.Printf("\n%s\n", ui.Critical("Newly-introduced issues since last review:"))
-		for _, f := range newFindings {
-			ui.Printf("  %s %s (%s)\n", ui.Critical(fmt.Sprintf("[%s]", f.Severity)), f.Message, f.Rule)
-		}
-	}
-}
-
-// saveReview persists the current scan state for future update-diff.
-func saveReview(res *scanResult) {
-	if reviewStore == nil || res.Context == nil || res.Context.AURInfo == nil {
-		return
-	}
-	raw, err := os.ReadFile(filepath.Join(res.PkgDir, "PKGBUILD"))
-	if err != nil {
-		return
-	}
-	committer := ""
-	if res.Provenance != nil {
-		committer = res.Provenance.Maintainer
-	}
-	rec := &review.Record{
-		PackageBase:  res.Pkgbase,
-		Committer:    committer,
-		PkgbuildHash: review.Hash(raw),
-		PkgbuildRaw:  string(raw),
-		Verdict:      res.Score.Verdict.String(),
-		ReviewedAt:   time.Now(),
-	}
-	_ = reviewStore.Put(rec)
+	cmd.Flags().BoolVar(&yes, "yes", false, "do not prompt for unchanged, clean packages")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the plan without building or installing")
+	cmd.Flags().BoolVar(&allowNet, "allow-net", false, "allow the build phase to use the network")
+	cmd.Flags().BoolVar(&noSandbox, "no-sandbox", false, "build without bubblewrap (unsafe)")
+	cmd.Flags().BoolVar(&force, "force", false, "install despite blocking findings after extra confirmation")
+	return cmd
 }
