@@ -117,6 +117,25 @@ func Foreign() ([]string, error) {
 	return nonEmptyLines(out), nil
 }
 
+// InstalledVersions returns the installed version of every package, keyed
+// by package name. Audit needs the version string for foreign packages,
+// and one `pacman -Q` is cheaper than a query per package.
+func InstalledVersions() (map[string]string, error) {
+	out, _, err := run("pacman", "-Q")
+	if err != nil {
+		return nil, err
+	}
+	versions := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		versions[fields[0]] = fields[1]
+	}
+	return versions, nil
+}
+
 var missingFilesPattern = regexp.MustCompile(`(\d+)\s+missing\s+files?`)
 
 // CheckIntegrity runs pacman -Qkk and returns the integrity findings for pkg.

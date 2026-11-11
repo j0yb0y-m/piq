@@ -6,6 +6,7 @@ import (
 	"github.com/j0yb0y-m/piq/internal/aur"
 	"github.com/j0yb0y-m/piq/internal/pipeline"
 	"github.com/j0yb0y-m/piq/internal/report"
+	"github.com/j0yb0y-m/piq/internal/scanner"
 )
 
 // scanReport builds the JSON report for the scan command.
@@ -31,15 +32,7 @@ func scanReportFor(res *pipeline.Result, command string) report.Scan {
 		r.Score = res.Score.Total
 		r.Blocked = res.Score.Blocked
 		r.BlockReason = res.Score.BlockReason
-		for _, f := range res.Score.Findings {
-			r.Findings = append(r.Findings, report.Finding{
-				Rule:     f.Rule,
-				Severity: f.Severity.String(),
-				File:     f.File,
-				Line:     f.Line,
-				Message:  f.Message,
-			})
-		}
+		r.Findings = findingsReport(res.Score.Findings)
 	}
 	if res.Provenance != nil {
 		r.Provenance = &report.Provenance{
@@ -50,6 +43,21 @@ func scanReportFor(res *pipeline.Result, command string) report.Scan {
 		}
 	}
 	return r
+}
+
+// findingsReport converts scanner findings into the JSON contract.
+func findingsReport(findings []scanner.Finding) []report.Finding {
+	out := make([]report.Finding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, report.Finding{
+			Rule:     f.Rule,
+			Severity: f.Severity.String(),
+			File:     f.File,
+			Line:     f.Line,
+			Message:  f.Message,
+		})
+	}
+	return out
 }
 
 // searchReport builds the JSON report for search results.

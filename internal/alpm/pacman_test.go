@@ -207,6 +207,40 @@ func TestInOfficial(t *testing.T) {
 	})
 }
 
+func TestInstalledVersions(t *testing.T) {
+	t.Run("parses name and version pairs", func(t *testing.T) {
+		stub(t, "pacman", "#!/bin/sh\nprintf 'paru 2.0.4-1\\nyay 12.3.5-1\\n'\n")
+
+		got, err := InstalledVersions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["paru"] != "2.0.4-1" || got["yay"] != "12.3.5-1" {
+			t.Fatalf("got %v", got)
+		}
+	})
+
+	t.Run("ignores blank and malformed lines", func(t *testing.T) {
+		stub(t, "pacman", "#!/bin/sh\nprintf '\\nparu 2.0.4-1\\nbroken\\n'\n")
+
+		got, err := InstalledVersions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got["paru"] != "2.0.4-1" {
+			t.Fatalf("got %v", got)
+		}
+	})
+
+	t.Run("non-zero exit is an error", func(t *testing.T) {
+		stub(t, "pacman", "#!/bin/sh\nexit 1\n")
+
+		if _, err := InstalledVersions(); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
 func TestInstalled(t *testing.T) {
 	t.Run("exit 0 means installed", func(t *testing.T) {
 		stub(t, "pacman", "#!/bin/sh\nexit 0\n")
