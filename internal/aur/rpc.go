@@ -22,6 +22,8 @@ const (
 	maxURLLen = 4000
 	// maxAttempts caps retries of transient failures, including the first try.
 	maxAttempts = 3
+	// maxRetryAfter caps how long a server can ask piq to wait.
+	maxRetryAfter = 5 * time.Second
 )
 
 type Client struct {
@@ -132,16 +134,27 @@ func (c *Client) do(params url.Values) (*rpcResponse, error) {
 		}
 
 		delay := c.retryDelay(attempt)
-		if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
-			if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
-				delay = time.Duration(secs) * time.Second
-			}
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			delay = retryAfterDelay(ra, delay)
 		}
 		if delay > 0 {
 			time.Sleep(delay)
 		}
 	}
 	return nil, lastErr
+}
+
+// retryAfterDelay parses a Retry-After header and bounds it so a
+// malicious or misconfigured server cannot stall piq indefinitely.
+func retryAfterDelay(raw string, fallback time.Duration) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || secs < 0 {
+		return fallback
+	}
+	if secs > int(maxRetryAfter/time.Second) {
+		return maxRetryAfter
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // search runs a name and description search, same as piq search <term>
@@ -197,4 +210,30 @@ func (c *Client) Info(names ...string) ([]Package, error) {
 // package's pieces share one repo).
 func CloneURL(pkgbase string) string {
 	return "https://aur.archlinux.org/" + strings.TrimSpace(pkgbase) + ".git"
+}
+
+// ValidName reports whether name is safe to use as an AUR package or
+// package base name. AUR names contain alphanumerics and @ . _ + -, must
+// not start with a dot or hyphen, and never contain path separators.
+func ValidName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	if !isNameStart(name[0]) {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '@', c == '.', c == '_', c == '+', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isNameStart(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '+' || c == '@'
 }

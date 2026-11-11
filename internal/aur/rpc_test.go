@@ -218,3 +218,38 @@ func TestInfoShrinksBatchForLongNames(t *testing.T) {
 		t.Fatalf("requests = %d, want more than 1", got)
 	}
 }
+
+func TestValidName(t *testing.T) {
+	valid := []string{"paru", "yay", "0ad", "python-foo", "lib32-glibc", "foo@bar", "a_b+c.d", "c++", "+foo", "@foo"}
+	for _, name := range valid {
+		if !ValidName(name) {
+			t.Errorf("ValidName(%q) = false", name)
+		}
+	}
+	invalid := []string{"", ".", "..", "../escape", "a/b", `a\b`, "-evil", ".hidden", "has space", "nul\x00", "é"}
+	for _, name := range invalid {
+		if ValidName(name) {
+			t.Errorf("ValidName(%q) = true", name)
+		}
+	}
+}
+
+func TestRetryAfterDelayIsBounded(t *testing.T) {
+	fallback := 250 * time.Millisecond
+	cases := []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"2", 2 * time.Second},
+		{" 3 ", 3 * time.Second},
+		{"999999", maxRetryAfter},
+		{"-1", fallback},
+		{"soon", fallback},
+		{"", fallback},
+	}
+	for _, tc := range cases {
+		if got := retryAfterDelay(tc.raw, fallback); got != tc.want {
+			t.Errorf("retryAfterDelay(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}

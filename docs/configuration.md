@@ -91,7 +91,8 @@ requires bubblewrap and fails if it cannot be found.
 
 `--no-sandbox` has the same authorization semantics for one invocation: it
 permits a missing-bubblewrap fallback, but does not force piq to stop using an
-available sandbox.
+available sandbox. The fallback has no isolation: `prepare()`, `build()`, and
+`package()` run with the user's filesystem and network access.
 
 ### `pacman.sudo_cmd`
 
@@ -162,8 +163,10 @@ sudo_cmd = "sudo"
 - `rules.ignore = ["*"]` disables every rule, including gates. A clean scan
   then means only that piq did not look.
 - `sandbox.enabled = false` does not make builds unsandboxed when `bwrap` is
-  present. It only authorizes a fallback when `bwrap` is unavailable.
-- `--allow-net` grants the build phase network access. Prefer leaving it off.
+  present. It only authorizes a fallback when `bwrap` is unavailable, and that
+  fallback has no filesystem or network isolation.
+- `--allow-net` grants network access to source preparation and the build
+  phase. Prefer leaving it off.
 - Builds never run as root. Running piq itself under `sudo` is unsupported.
 - Review records are per-user. Do not copy them between users and treat them
   as an approval for someone else's account.

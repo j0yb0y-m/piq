@@ -60,7 +60,7 @@ func Missing(names []string) ([]string, error) {
 		return nil, nil
 	}
 
-	args := append([]string{"-T"}, names...)
+	args := append([]string{"-T", "--"}, names...)
 	out, _, err := run("pacman", args...)
 	if err == nil {
 		// pacman -T exits 0 when every name is satisfied.
@@ -79,7 +79,7 @@ func Missing(names []string) ([]string, error) {
 // repository. A non-zero exit means "not found"; only a failure to start
 // pacman is returned as an error.
 func InOfficial(name string) (bool, error) {
-	_, _, err := run("pacman", "-Si", name)
+	_, _, err := run("pacman", "-Si", "--", name)
 	if err == nil {
 		return true, nil
 	}
@@ -95,7 +95,7 @@ func InOfficial(name string) (bool, error) {
 // A non-zero exit means "not installed"; only a failure to start pacman is
 // returned as an error.
 func Installed(name string) (bool, error) {
-	_, _, err := run("pacman", "-Q", name)
+	_, _, err := run("pacman", "-Q", "--", name)
 	if err == nil {
 		return true, nil
 	}

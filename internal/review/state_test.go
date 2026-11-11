@@ -428,3 +428,43 @@ func TestPutConcurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreRejectsEscapingPackageBase(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"../escape", "a/b", `a\b`, "..", "."} {
+		if _, err := store.Get(name); err == nil {
+			t.Errorf("Get(%q) accepted an unsafe name", name)
+		}
+		if err := store.Put(&Record{PackageBase: name}); err == nil {
+			t.Errorf("Put(%q) accepted an unsafe name", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape.json")); !os.IsNotExist(err) {
+		t.Fatalf("store wrote outside its directory: %v", err)
+	}
+}
+
+func TestFingerprintRejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "PKGBUILD"), []byte("pkgname=x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(dir, "huge.install"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxReviewFileBytes + 1); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Fingerprint(dir); err == nil {
+		t.Fatal("oversized scriptlet was hashed")
+	}
+}

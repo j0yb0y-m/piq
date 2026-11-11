@@ -54,11 +54,11 @@ func cacheDir() (string, error) {
 	if cfg != nil && cfg.CacheDir != "" {
 		return cfg.CacheDir, nil
 	}
-	home, err := os.UserHomeDir()
+	dir, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "piq"), nil
+	return filepath.Join(dir, "piq"), nil
 }
 
 func confirm(prompt string) bool {
@@ -114,7 +114,7 @@ func scanCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&deep, "deep", false, "fetch and scan upstream sources")
+	cmd.Flags().BoolVar(&deep, "deep", false, "fetch and scan upstream sources (skipped when the static scan blocks)")
 	return cmd
 }
 
@@ -160,7 +160,7 @@ func installCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "do not prompt for unchanged, clean packages")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the plan without building or installing")
-	cmd.Flags().BoolVar(&allowNet, "allow-net", false, "allow the build phase to use the network")
+	cmd.Flags().BoolVar(&allowNet, "allow-net", false, "allow source preparation and the build to use the network")
 	cmd.Flags().BoolVar(&noSandbox, "no-sandbox", false, "permit an unsandboxed build if bubblewrap is unavailable")
 	cmd.Flags().BoolVar(&force, "force", false, "install despite blocking findings after extra confirmation")
 	return cmd

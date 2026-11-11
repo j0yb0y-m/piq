@@ -157,7 +157,10 @@ func (p *Pipeline) allowUnsandboxed() bool {
 }
 
 // Scan fetches and scores one package. When deep is true it also
-// fetches upstream sources and scans their contents.
+// fetches upstream sources and scans their contents, unless the static
+// scan already blocks the package and Force is not set. Skipping the
+// deep phase keeps an already-rejected PKGBUILD from running prepare()
+// or pkgver().
 func (p *Pipeline) Scan(ctx context.Context, name string, deep bool) (*Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -178,6 +181,9 @@ func (p *Pipeline) Scan(ctx context.Context, name string, deep bool) (*Result, e
 	pkgbase := pkg.PackageBase
 	if pkgbase == "" {
 		pkgbase = pkg.Name
+	}
+	if !aur.ValidName(pkgbase) {
+		return nil, fmt.Errorf("unsafe package base %q returned by AUR for %q", pkgbase, name)
 	}
 	pkgDir := filepath.Join(p.opts.CacheDir, pkgbase)
 	if err := p.fetchRepo(pkgbase, pkgDir); err != nil {
@@ -206,7 +212,7 @@ func (p *Pipeline) Scan(ctx context.Context, name string, deep bool) (*Result, e
 		AURInfo:  &pkg,
 		File:     pkgbuildPath,
 	}
-	collectLocalFiles(sctx, pkgDir)
+	localFindings := collectLocalFiles(sctx, pkgDir)
 
 	var prov *history.Provenance
 	if inspected, err := history.Inspect(pkgDir); err == nil {
@@ -226,7 +232,8 @@ func (p *Pipeline) Scan(ctx context.Context, name string, deep bool) (*Result, e
 		return nil, fmt.Errorf("fingerprinting package: %w", err)
 	}
 
-	extra := make([]scanner.Finding, 0, 1)
+	extra := make([]scanner.Finding, 0, len(localFindings)+1)
+	extra = append(extra, localFindings...)
 	if missingSrcinfo {
 		extra = append(extra, scanner.Finding{
 			Rule:     "missing-srcinfo",
@@ -252,6 +259,10 @@ func (p *Pipeline) Scan(ctx context.Context, name string, deep bool) (*Result, e
 	}
 	res.Score = p.score(sctx, extra)
 
+	if deep && res.Score.Blocked && !p.opts.Force {
+		return res, nil
+	}
+
 	if deep {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -262,11 +273,17 @@ func (p *Pipeline) Scan(ctx context.Context, name string, deep bool) (*Result, e
 		}
 		if err := p.fetchSrc(layout, build.Options{
 			AllowUnsandboxed: p.allowUnsandboxed(),
-			AllowNet:         true,
-			Stdout:           p.out(),
-			Stderr:           ui.Err(),
+			// Source download always has network access; prepare()
+			// runs in the extraction phase and gets network only
+			// when the user explicitly allows it.
+			AllowNet: p.opts.AllowNet,
+			Stdout:   p.out(),
+			Stderr:   ui.Err(),
 		}); err != nil {
 			return nil, fmt.Errorf("fetching sources: %w", err)
+		}
+		if err := build.ValidateBuildFile(layout, raw); err != nil {
+			return nil, fmt.Errorf("validating PKGBUILD after fetch: %w", err)
 		}
 		fileScan, err := scanner.ScanTree(layout.SrcDir(), scanner.FileOptions{Deep: false})
 		if err != nil {
@@ -295,7 +312,9 @@ func (p *Pipeline) score(sctx *scanner.Context, extra []scanner.Finding) *scanne
 // Install scans, resolves dependencies, builds, inspects, and installs
 // a package and its AUR dependency closure.
 func (p *Pipeline) Install(ctx context.Context, name string) (*Result, error) {
-	root, err := p.Scan(ctx, name, true)
+	// A dry run only needs metadata. Skip the deep fetch so no source
+	// preparation runs for a plan that will never build.
+	root, err := p.Scan(ctx, name, !p.opts.DryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +359,7 @@ func (p *Pipeline) Install(ctx context.Context, name string) (*Result, error) {
 			return root, fmt.Errorf("resolving elevation command: %w", err)
 		}
 		p.outf("%s\n", ui.Notice(fmt.Sprintf("Installing %d repository dependency(ies)...", len(repoDeps))))
-		args := append(append([]string{}, elev...), "-S", "--asdeps", "--needed", "--noconfirm")
+		args := append(append([]string{}, elev...), "-S", "--asdeps", "--needed", "--noconfirm", "--")
 		args = append(args, repoDeps...)
 		if err := p.pacmanRun(args); err != nil {
 			return root, fmt.Errorf("installing repository dependencies: %w", err)
@@ -517,7 +536,7 @@ func (p *Pipeline) installBuilt(res *Result) error {
 	if err != nil {
 		return fmt.Errorf("resolving elevation command: %w", err)
 	}
-	args := append(append([]string{}, elev...), "-U", "--noconfirm")
+	args := append(append([]string{}, elev...), "-U", "--noconfirm", "--")
 	args = append(args, artifacts...)
 	p.outf("%s\n", ui.Notice("Installing "+res.Pkgbase+" with pacman..."))
 	if err := p.pacmanRun(args); err != nil {
@@ -585,6 +604,9 @@ func loadSrcinfo(pkgDir string) (*srcinfo.Srcinfo, bool, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, false, fmt.Errorf("parsing .SRCINFO: %s is not a regular file", path)
 	}
+	if fi.Size() > maxLocalFileBytes {
+		return nil, false, fmt.Errorf("parsing .SRCINFO: file is larger than %d bytes", int64(maxLocalFileBytes))
+	}
 	meta, err := pkgbuild.LoadSrcinfo(path)
 	if err != nil {
 		return nil, false, fmt.Errorf("parsing .SRCINFO: %w", err)
@@ -592,8 +614,17 @@ func loadSrcinfo(pkgDir string) (*srcinfo.Srcinfo, bool, error) {
 	return meta, false, nil
 }
 
-// readRegularFile refuses symlinks, FIFOs, devices, and directories so
-// untrusted repository content cannot block or exhaust the scanner.
+// maxLocalFileBytes bounds every file piq reads from an AUR checkout.
+// Larger files are reported and left unscanned instead of exhausting
+// memory or parser time.
+const maxLocalFileBytes = 8 << 20
+
+// errFileTooLarge marks a read that hit the repository file limit.
+var errFileTooLarge = errors.New("file exceeds scan limit")
+
+// readRegularFile refuses symlinks, FIFOs, devices, and directories and
+// refuses files above maxLocalFileBytes so untrusted repository content
+// cannot block or exhaust the scanner.
 func readRegularFile(path string) ([]byte, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -602,17 +633,38 @@ func readRegularFile(path string) ([]byte, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	return os.ReadFile(path)
+	return readCappedFile(path, maxLocalFileBytes)
+}
+
+// readCappedFile reads at most limit bytes and fails if the file is
+// larger, so a file that grows after a size check is still rejected.
+func readCappedFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w: %s is larger than %d bytes", errFileTooLarge, path, limit)
+	}
+	return data, nil
 }
 
 // collectLocalFiles populates ctx.Scriptlets and ctx.Sources from
 // regular files actually present in the fetched repo. Symlinks are not
 // followed: source rules then report referenced files as missing rather
-// than reading outside the clone.
-func collectLocalFiles(ctx *scanner.Context, pkgDir string) {
+// than reading outside the clone. Oversized files are recorded as
+// present but reported as unscanned so a missing-scriptlet check does not
+// fire a misleading second finding.
+func collectLocalFiles(ctx *scanner.Context, pkgDir string) []scanner.Finding {
+	var findings []scanner.Finding
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
-		return
+		return nil
 	}
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
@@ -622,14 +674,35 @@ func collectLocalFiles(ctx *scanner.Context, pkgDir string) {
 			continue
 		}
 		path := filepath.Join(pkgDir, e.Name())
-		data, err := os.ReadFile(path)
+		info, err := e.Info()
 		if err != nil {
 			continue
 		}
+		var data []byte
+		oversized := info.Size() > maxLocalFileBytes
+		if !oversized {
+			data, err = readCappedFile(path, maxLocalFileBytes)
+			if err != nil {
+				if !errors.Is(err, errFileTooLarge) {
+					continue
+				}
+				oversized = true
+			}
+		}
+		if oversized {
+			findings = append(findings, scanner.Finding{
+				Rule:     "oversized-local-file",
+				Severity: scanner.Warning,
+				File:     e.Name(),
+				Message:  fmt.Sprintf("local file %s exceeds the %d-byte scan limit; its contents were not scanned", e.Name(), int64(maxLocalFileBytes)),
+			})
+		}
 		var fileAST *syntax.File
-		parsed, perr := pkgbuild.Parse(strings.NewReader(string(data)), e.Name())
-		if perr == nil {
-			fileAST = parsed
+		if !oversized {
+			parsed, perr := pkgbuild.Parse(strings.NewReader(string(data)), e.Name())
+			if perr == nil {
+				fileAST = parsed
+			}
 		}
 		ctx.Sources = append(ctx.Sources, scanner.LocalSource{
 			Name:     e.Name(),
@@ -639,7 +712,7 @@ func collectLocalFiles(ctx *scanner.Context, pkgDir string) {
 			AST:      fileAST,
 			IsScript: strings.HasSuffix(e.Name(), ".install"),
 		})
-		if strings.HasSuffix(e.Name(), ".install") {
+		if strings.HasSuffix(e.Name(), ".install") && !oversized {
 			ctx.Scriptlets = append(ctx.Scriptlets, scanner.Scriptlet{
 				Name: e.Name(),
 				Raw:  string(data),
@@ -647,18 +720,22 @@ func collectLocalFiles(ctx *scanner.Context, pkgDir string) {
 			})
 		}
 	}
+	return findings
 }
 
-// pickPackage selects the exact package from an info response, falling
-// back to the first result because AUR preserves server order.
+// pickPackage selects the exact package from an info response. AUR
+// pkgbase queries return every split package, so when no name matches,
+// fall back only to a package whose package base is the requested name.
 func pickPackage(pkgs []aur.Package, name string) (aur.Package, bool) {
 	for _, pkg := range pkgs {
 		if pkg.Name == name {
 			return pkg, true
 		}
 	}
-	if len(pkgs) > 0 {
-		return pkgs[0], true
+	for _, pkg := range pkgs {
+		if pkg.PackageBase == name {
+			return pkg, true
+		}
 	}
 	return aur.Package{}, false
 }

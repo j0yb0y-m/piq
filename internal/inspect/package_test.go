@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -339,4 +340,75 @@ func writeZstdTar(t *testing.T, headers []tar.Header) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestSuspiciousEntriesHardlinkTraversal(t *testing.T) {
+	entries := []FileEntry{
+		{Path: "/usr/bin/x", Linkname: "../../etc/shadow", Typeflag: tar.TypeLink},
+		{Path: "/usr/bin/y", Linkname: "/etc/passwd", Typeflag: tar.TypeLink},
+		{Path: "/usr/bin/z", Linkname: "../lib/z", Typeflag: tar.TypeLink},
+	}
+	suspicious := SuspiciousEntries(entries)
+	want := []string{
+		"escaping hardlink: /usr/bin/x -> ../../etc/shadow",
+		"escaping hardlink: /usr/bin/y -> /etc/passwd",
+		"escaping hardlink: /usr/bin/z -> ../lib/z",
+	}
+	if len(suspicious) != len(want) {
+		t.Fatalf("expected %d findings, got %v", len(want), suspicious)
+	}
+	for i := range want {
+		if suspicious[i] != want[i] {
+			t.Errorf("finding %d: got %q, want %q", i, suspicious[i], want[i])
+		}
+	}
+}
+
+func TestSuspiciousEntriesExpandedSystemConfig(t *testing.T) {
+	entries := []FileEntry{
+		{Path: "/etc/pam.d/sshd", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/ssh/sshd_config", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/sudoers", Mode: 0o440, Typeflag: tar.TypeReg},
+		{Path: "/etc/ld.so.conf.d/x.conf", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/pacman.conf", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/modprobe.d/x.conf", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/udev/rules.d/99-x.rules", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/sysctl.d/99-x.conf", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/polkit-1/rules.d/49-x.rules", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/dbus-1/system.d/x.conf", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/profile", Mode: 0o644, Typeflag: tar.TypeReg},
+		{Path: "/etc/mkinitcpio.d/linux.preset", Mode: 0o644, Typeflag: tar.TypeReg},
+	}
+	suspicious := SuspiciousEntries(entries)
+	if len(suspicious) != len(entries) {
+		t.Fatalf("expected %d findings, got %v", len(entries), suspicious)
+	}
+	for _, msg := range suspicious {
+		if !strings.HasPrefix(msg, "system config path: ") {
+			t.Errorf("unexpected finding: %q", msg)
+		}
+	}
+}
+
+func TestReadListingRejectsTooManyEntries(t *testing.T) {
+	path := writeZstdTar(t, []tar.Header{
+		{Name: "a", Typeflag: tar.TypeReg},
+		{Name: "b", Typeflag: tar.TypeReg},
+		{Name: "c", Typeflag: tar.TypeReg},
+		{Name: "d", Typeflag: tar.TypeReg},
+	})
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+
+	if _, err := readListing(zr, 3); err == nil {
+		t.Fatal("listing accepted more entries than its limit")
+	}
 }

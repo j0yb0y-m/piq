@@ -57,11 +57,11 @@ func Default() *Config {
 }
 
 func defaultCacheDir() string {
-	home, err := os.UserHomeDir()
+	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".cache", "piq")
+	return filepath.Join(dir, "piq")
 }
 
 // Path returns the absolute path of the primary config file.

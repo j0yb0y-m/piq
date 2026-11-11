@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -48,8 +49,17 @@ func (s *Store) path(pkgbase string) string {
 	return filepath.Join(s.dir, pkgbase+".json")
 }
 
+// validRecordName rejects package bases that would escape the store or
+// produce a dot-only path component.
+func validRecordName(pkgbase string) bool {
+	return pkgbase != "" && pkgbase != "." && pkgbase != ".." && !strings.ContainsAny(pkgbase, `/\`)
+}
+
 // Get returns the stored record for pkgbase, or nil if none.
 func (s *Store) Get(pkgbase string) (*Record, error) {
+	if !validRecordName(pkgbase) {
+		return nil, fmt.Errorf("invalid package base %q", pkgbase)
+	}
 	data, err := os.ReadFile(s.path(pkgbase))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -67,6 +77,12 @@ func (s *Store) Get(pkgbase string) (*Record, error) {
 // Put saves a record atomically: the data is written and synced to a
 // temp file in the store dir, then renamed over the final path.
 func (s *Store) Put(rec *Record) error {
+	if rec == nil {
+		return errors.New("nil review record")
+	}
+	if !validRecordName(rec.PackageBase) {
+		return fmt.Errorf("invalid package base %q", rec.PackageBase)
+	}
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
@@ -176,9 +192,15 @@ func Fingerprint(dir string) (pkgbuildHash, srcinfoHash, scriptletHash string, e
 	return pkgbuildHash, srcinfoHash, ScriptletHash(scriptlets), nil
 }
 
+// maxReviewFileBytes bounds every file Fingerprint reads. A package with
+// a larger PKGBUILD, .SRCINFO, or scriptlet is rejected instead of
+// exhausting memory while hashing it.
+const maxReviewFileBytes = 8 << 20
+
 // readRegularFile reads path only if it is a regular file. It rejects
-// symlinks, FIFOs, devices, and directories before opening them so a
-// hostile checkout cannot block or exhaust memory.
+// symlinks, FIFOs, devices, and directories before opening them, and
+// refuses files larger than maxReviewFileBytes so a hostile checkout
+// cannot block or exhaust memory.
 func readRegularFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -187,7 +209,19 @@ func readRegularFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
-	return os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxReviewFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxReviewFileBytes {
+		return nil, fmt.Errorf("%s: larger than %d bytes", path, maxReviewFileBytes)
+	}
+	return data, nil
 }
 
 // Hash returns the sha256 hex digest of a byte slice.

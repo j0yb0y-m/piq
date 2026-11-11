@@ -68,12 +68,18 @@ opts out. The sandbox:
 - unshares all namespaces, including the network namespace;
 - makes `/usr` and `/etc` read-only;
 - mounts `/proc`, `/dev`, `/tmp`, and `/var` with sandbox-local state;
-- writes only to the package checkout, source cache, build tree, package
-  destination, and log destination under the piq cache;
+- keeps the package checkout read-only and writes only to a staged PKGBUILD
+  copy, the source cache, the build tree, the package destination, and the log
+  destination;
 - runs from the package directory with `HOME` and makepkg destinations
   redirected into the cache;
-- allows network access during the source-fetch phase, and denies it during
-  the build phase unless `--allow-net` is passed.
+- allows network access during source download, and denies it during source
+  extraction/preparation and the build unless `--allow-net` is passed.
+
+Checksums and PGP signatures are verified once, in the network-enabled download
+phase. The offline extraction phase reuses that verified cache and skips a
+second integrity pass. A PKGBUILD `verify()` hook runs only in the networked
+phase.
 
 `makepkg` is never run as root. The unsandboxed path is reachable only through
 an explicit `--no-sandbox` or an explicit `sandbox.enabled = false`; a missing
@@ -86,9 +92,9 @@ root privileges. Artifact inspection happens before that step.
 ### Artifact inspection
 
 Before installation, piq opens every built package and flags setuid/setgid
-files, world-writable files, system configuration paths, escaping symlinks,
-device nodes, and path traversal. Suspicious entries require consent unless
-`--yes` was passed; a blocked package requires `--force` and two separate
+files, world-writable files, system configuration paths, escaping symlinks and
+hardlinks, device nodes, and path traversal. Suspicious entries require consent
+unless `--yes` was passed; a blocked package requires `--force` and two separate
 confirmations.
 
 ### Review records
@@ -111,7 +117,10 @@ safely read or trust a user's review state.
   same rules.
 - A missing bubblewrap binary does not silently produce an unsandboxed build
   when sandboxing was not explicitly disabled.
-- Builds run without network access by default.
+- Source preparation and builds run without network access by default.
+- The reviewed AUR checkout is read-only inside the sandbox. `pkgver()` may
+  update a staged PKGBUILD copy, and piq accepts only strict `pkgver`/`pkgrel`
+  assignments there; any other change aborts the install.
 - A failed or aborted install does not write a successful review record.
 - JSON output is pure JSON on stdout; progress and prompts go to stderr.
 
@@ -122,9 +131,15 @@ safe.
 
 These risks are accepted and documented rather than hidden:
 
-- **Preparation can run before source scanning.** `prepare()` may execute
-  inside the sandbox before extracted sources are scanned. It cannot modify
-  the host through the sandbox, but it can influence the build.
+- **`prepare()` runs before the source-tree scan.** It executes in the
+  no-network fetch sandbox after the PKGBUILD scan, and the source tree it
+  produces is the tree that is scanned and built. It cannot modify the
+  reviewed checkout, but a pathological `prepare()` can still influence what
+  the subsequent build sees.
+- **The unsandboxed fallback has no isolation.** When `--no-sandbox` or
+  `sandbox.enabled = false` authorizes it because bubblewrap is missing,
+  `prepare()`, `build()`, and `package()` run with the user's filesystem and
+  network access. Network denial applies only to sandboxed runs.
 - **Build-time network fetches are heuristic, not impossible.** The build
   phase has no network by default. If you pass `--allow-net`, or if a
   malicious build finds another channel, static rules may miss the fetch.

@@ -107,7 +107,7 @@ func TestMissing(t *testing.T) {
 		if _, err := Missing([]string{"a", "b"}); err != nil {
 			t.Fatal(err)
 		}
-		assertArgs(t, log, "-T", "a", "b")
+		assertArgs(t, log, "-T", "--", "a", "b")
 	})
 
 	t.Run("binary absent is an error", func(t *testing.T) {
@@ -205,6 +205,17 @@ func TestInOfficial(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+
+	t.Run("separates options from the package name", func(t *testing.T) {
+		log := filepath.Join(t.TempDir(), "args")
+		t.Setenv("PIQ_STUB_LOG", log)
+		stub(t, "pacman", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$PIQ_STUB_LOG\"\nexit 1\n")
+
+		if _, err := InOfficial("--help"); err != nil {
+			t.Fatal(err)
+		}
+		assertArgs(t, log, "-Si", "--", "--help")
+	})
 }
 
 func TestInstalledVersions(t *testing.T) {
@@ -272,6 +283,17 @@ func TestInstalled(t *testing.T) {
 		if _, err := Installed("jq"); err == nil {
 			t.Fatal("expected error")
 		}
+	})
+
+	t.Run("separates options from the package name", func(t *testing.T) {
+		log := filepath.Join(t.TempDir(), "args")
+		t.Setenv("PIQ_STUB_LOG", log)
+		stub(t, "pacman", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$PIQ_STUB_LOG\"\nexit 1\n")
+
+		if _, err := Installed("--help"); err != nil {
+			t.Fatal(err)
+		}
+		assertArgs(t, log, "-Q", "--", "--help")
 	})
 }
 

@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"archive/tar"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -18,6 +19,14 @@ type FileEntry struct {
 	Typeflag byte
 }
 
+const (
+	// maxListingEntries bounds how many tar headers piq will accept. A
+	// real package never approaches this; a hostile archive might.
+	maxListingEntries = 1_000_000
+	// maxDecoderMemory bounds zstd decoder allocations.
+	maxDecoderMemory = 256 << 20
+)
+
 // Listing decompresses and walks a built .pkg.tar.zst without ever
 // extracting it to disk, returning every entry's path, permission
 // bits, size, symlink target, and tar type.
@@ -28,13 +37,19 @@ func Listing(pkgPath string) ([]FileEntry, error) {
 	}
 	defer f.Close()
 
-	zr, err := zstd.NewReader(f)
+	zr, err := zstd.NewReader(f, zstd.WithDecoderMaxMemory(maxDecoderMemory))
 	if err != nil {
 		return nil, err
 	}
 	defer zr.Close()
 
-	tr := tar.NewReader(zr)
+	return readListing(zr, maxListingEntries)
+}
+
+// readListing walks a decompressed tar stream and rejects archives with
+// more than limit headers.
+func readListing(r io.Reader, limit int) ([]FileEntry, error) {
+	tr := tar.NewReader(r)
 	var entries []FileEntry
 	for {
 		hdr, err := tr.Next()
@@ -43,6 +58,9 @@ func Listing(pkgPath string) ([]FileEntry, error) {
 		}
 		if err != nil {
 			return nil, err
+		}
+		if len(entries) >= limit {
+			return nil, fmt.Errorf("archive contains more than %d entries", limit)
 		}
 		entries = append(entries, FileEntry{
 			Path:     hdr.Name,
@@ -88,6 +106,13 @@ func SuspiciousEntries(entries []FileEntry) []string {
 
 	for _, e := range entries {
 		raw := normalizePath(e.Path)
+		// Check the pre-clean form so a ".." cannot be normalized away.
+		// Traversal is severe enough on its own; do not also report the
+		// normalized path as a second finding for the same entry.
+		if hasTraversal(raw) {
+			add("path traversal: " + raw)
+			continue
+		}
 		p := path.Clean(raw)
 
 		if e.Mode&os.ModeSetuid != 0 || e.Mode&os.ModeSetgid != 0 {
@@ -102,12 +127,11 @@ func SuspiciousEntries(entries []FileEntry) []string {
 		if isEscapingSymlink(e, p) {
 			add("escaping symlink: " + p + " -> " + e.Linkname)
 		}
+		if isEscapingHardlink(e) {
+			add("escaping hardlink: " + p + " -> " + e.Linkname)
+		}
 		if e.Typeflag == tar.TypeChar || e.Typeflag == tar.TypeBlock {
 			add("device node: " + p)
-		}
-		// Check the pre-clean form so a ".." cannot be normalized away.
-		if hasTraversal(raw) {
-			add("path traversal: " + raw)
 		}
 	}
 	return out
@@ -139,20 +163,67 @@ func isWorldWritable(e FileEntry, p string) bool {
 }
 
 func isSystemConfig(p string) bool {
-	if p == "/etc/ld.so.preload" {
+	switch p {
+	case "/etc/bash.bashrc",
+		"/etc/crypttab",
+		"/etc/dracut.conf",
+		"/etc/environment",
+		"/etc/fstab",
+		"/etc/gshadow",
+		"/etc/group",
+		"/etc/hosts",
+		"/etc/ld.so.conf",
+		"/etc/ld.so.preload",
+		"/etc/mkinitcpio.conf",
+		"/etc/nftables.conf",
+		"/etc/nsswitch.conf",
+		"/etc/pacman.conf",
+		"/etc/passwd",
+		"/etc/profile",
+		"/etc/resolv.conf",
+		"/etc/shadow",
+		"/etc/sudoers":
 		return true
 	}
 	for _, prefix := range []string{
-		"/etc/systemd/system/",
 		"/etc/cron.",
+		"/etc/dbus-1/system.d/",
+		"/etc/dracut.conf.d/",
+		"/etc/grub.d/",
+		"/etc/iptables/",
+		"/etc/ld.so.conf.d/",
+		"/etc/mkinitcpio.d/",
+		"/etc/modprobe.d/",
+		"/etc/modules-load.d/",
+		"/etc/NetworkManager/",
+		"/etc/pacman.d/",
+		"/etc/pam.d/",
+		"/etc/polkit-1/",
+		"/etc/security/",
+		"/etc/ssh/",
 		"/etc/sudoers.d/",
-		"/etc/pacman.d/hooks/",
+		"/etc/sysctl.d/",
+		"/etc/systemd/network/",
+		"/etc/systemd/system/",
+		"/etc/systemd/user/",
+		"/etc/udev/rules.d/",
+		"/etc/zsh/",
 	} {
 		if strings.HasPrefix(p, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+// isEscapingHardlink flags hardlink targets that are absolute or contain
+// parent-directory traversal. Both can point extraction outside the
+// package's expected footprint.
+func isEscapingHardlink(e FileEntry) bool {
+	if e.Typeflag != tar.TypeLink || e.Linkname == "" {
+		return false
+	}
+	return path.IsAbs(e.Linkname) || hasTraversal(e.Linkname)
 }
 
 func isEscapingSymlink(e FileEntry, p string) bool {

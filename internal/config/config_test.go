@@ -30,6 +30,14 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestDefaultCacheDirHonorsXDG(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	if got, want := Default().CacheDir, filepath.Join(dir, "piq"); got != want {
+		t.Fatalf("CacheDir = %q, want %q", got, want)
+	}
+}
+
 func TestLoadTOML(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "piq.toml")

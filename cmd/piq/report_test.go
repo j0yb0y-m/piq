@@ -20,7 +20,7 @@ func TestScanReportIncludesBlockReason(t *testing.T) {
 }
 
 func TestScanReportMapsFindingsAndProvenance(t *testing.T) {
-	committed := time.Date(2024, 5, 1, 12, 30, 0, 0, time.UTC)
+	committed := time.Date(2024, 5, 1, 12, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
 	res := &pipeline.Result{
 		Pkgbase: "demo",
 		Score: &scanner.Score{
@@ -72,6 +72,9 @@ func TestScanReportMapsFindingsAndProvenance(t *testing.T) {
 	}
 	if !r.Provenance.HeadCommittedAt.Equal(committed) {
 		t.Fatalf("head_committed_at = %v", r.Provenance.HeadCommittedAt)
+	}
+	if r.Provenance.HeadCommittedAt.Location() != time.UTC {
+		t.Fatalf("head_committed_at is not UTC: %v", r.Provenance.HeadCommittedAt)
 	}
 	if r.GeneratedAt.IsZero() || r.GeneratedAt.Location() != time.UTC {
 		t.Fatalf("generated_at = %v", r.GeneratedAt)

@@ -20,7 +20,8 @@ containment layer around the package manager you already have.
 If `bwrap` is missing, `install` fails instead of silently building without a
 sandbox. Only an explicit `--no-sandbox` or `sandbox.enabled = false` permits
 an unsandboxed build, and only when `bwrap` is unavailable; both options still
-use bubblewrap when it is installed.
+use bubblewrap when it is installed. The unsandboxed fallback has no
+filesystem or network isolation.
 
 ## Install
 
@@ -61,7 +62,7 @@ piq scan --deep paru
 # Scan, build in a sandbox, inspect, and install.
 piq install paru
 
-# Show the plan without building or installing.
+# Show the plan without building or installing (static scan only).
 piq install --dry-run paru
 
 # Audit installed foreign (AUR) packages.
@@ -83,16 +84,22 @@ piq version
 
 1. **Fetch** the package's git repository from the AUR and record its history.
 2. **Scan** the PKGBUILD, `.SRCINFO`, and every local `.install` scriptlet.
-3. **Fetch sources** in the sandbox (network allowed, no build yet) and scan
-   the extracted source tree.
+3. **Fetch sources** in two sandbox phases: download and verify with network
+   access, then extract and run `prepare()`/`pkgver()` without network access.
+   The AUR checkout stays read-only; `pkgver()` updates a staged PKGBUILD copy,
+   and piq rejects any change outside strict `pkgver`/`pkgrel` assignments
+   before scanning the prepared source tree. A package the static scan already
+   blocks is not deep-fetched unless `install --force` is used, so its hooks do
+   not run for a package that is already rejected.
 4. **Resolve AUR dependencies** leaf-first (depth 10, cycle-safe) and scan each
    one the same way. Only missing official-repository dependencies are installed
    with `pacman -S --asdeps`; AUR names are never passed to `pacman -S`.
-5. **Build** each package with `makepkg` inside bubblewrap. The build phase has
-   no network unless `--allow-net` is passed.
+5. **Build** each package with `makepkg` inside bubblewrap from the scanned,
+   prepared tree. The build phase has no network unless `--allow-net` is
+   passed; `--allow-net` also grants network to source preparation.
 6. **Inspect** every built artifact for setuid/setgid bits, world-writable
-   files, system config paths, escaping symlinks, device nodes, and path
-   traversal.
+   files, system config paths, escaping symlinks and hardlinks, device nodes,
+   and path traversal.
 7. **Ask for consent.** A blocked package requires `--force` plus two
    confirmations. Suspicious artifacts require a confirmation unless `--yes`.
 8. **Install** with `pacman -U`, then save the review record. A failed or

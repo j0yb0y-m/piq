@@ -39,7 +39,7 @@ func scanReportFor(res *pipeline.Result, command string) report.Scan {
 			CommitCount:     res.Provenance.CommitCount,
 			Maintainer:      res.Provenance.Maintainer,
 			HeadCommitter:   res.Provenance.HeadCommitter,
-			HeadCommittedAt: res.Provenance.HeadCommittedAt,
+			HeadCommittedAt: res.Provenance.HeadCommittedAt.UTC(),
 		}
 	}
 	return r

