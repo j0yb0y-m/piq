@@ -325,7 +325,7 @@ func (p *Pipeline) Install(ctx context.Context, name string) (*Result, error) {
 		}
 		if res.Score != nil && res.Score.Blocked && !p.opts.Force {
 			PrintFindings(p.out(), res)
-			return root, fmt.Errorf("%w: AUR dependency %s: %s", ErrBlocked, dep, res.Score.BlockReason)
+			return res, fmt.Errorf("%w: AUR dependency %s: %s", ErrBlocked, dep, res.Score.BlockReason)
 		}
 		deps = append(deps, res)
 	}

