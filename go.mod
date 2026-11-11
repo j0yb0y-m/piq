@@ -1,6 +1,6 @@
 module github.com/j0yb0y-m/piq
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/ProtonMail/go-crypto v1.4.1
@@ -12,7 +12,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/term v0.45.0
+	golang.org/x/term v0.46.0
 	mvdan.cc/sh/v3 v3.14.0
 )
 
@@ -45,8 +45,8 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/crypto v0.56.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
